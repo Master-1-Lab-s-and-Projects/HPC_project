@@ -7,6 +7,8 @@
 #include <getopt.h>
 #include <sys/time.h>
 
+#include <omp.h>
+
 
 double start = 0.0;
 
@@ -143,6 +145,7 @@ void sparse_array_remove(struct sparse_array_t *S, int x)
 
 void sparse_array_unremove(struct sparse_array_t *S)
 {
+        #pragma omp atomic
         S->len++;
 }
 
@@ -160,6 +163,7 @@ bool item_is_active(const struct context_t *ctx, int item)
 
 void solution_found(const struct instance_t *instance, struct context_t *ctx)
 {
+        #pragma omp atomic
         ctx->solutions++;
         if (!print_solutions)
                 return;
@@ -295,6 +299,7 @@ void uncover(const struct instance_t *instance, struct context_t *ctx, int item)
 void reactivate(const struct instance_t *instance, struct context_t *ctx,
                         int option, int uncovered_item)
 {
+        #pragma omp parallel for
         for (int k = instance->ptr[option + 1] - 1; k >= instance->ptr[option]; k--) {
                 int item = instance->options[k];
                 if (item == uncovered_item)
@@ -534,6 +539,9 @@ struct context_t * backtracking_setup(const struct instance_t *instance)
         return ctx;
 }
 
+/**
+ * TODO: Use omp task + threadprivate (isolate context between threads)
+ */
 void solve(const struct instance_t *instance, struct context_t *ctx)
 {
         ctx->nodes++;
@@ -556,6 +564,7 @@ void solve(const struct instance_t *instance, struct context_t *ctx)
                 ctx->child_num[ctx->level] = k;
                 choose_option(instance, ctx, option, chosen_item);
 
+                #pragma omp task
                 solve(instance, ctx);
 
                 if (ctx->solutions >= max_solutions)
