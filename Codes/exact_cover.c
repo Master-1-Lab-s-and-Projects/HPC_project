@@ -563,14 +563,20 @@ void solve(const struct instance_t *instance, struct context_t *ctx)
                 int option = active_options->p[k];
                 ctx->child_num[ctx->level] = k;
                 choose_option(instance, ctx, option, chosen_item);
+                // On assigne les taches ici, -> idée savoir qu'il ont fini leur travail quand il sort de cette boucle avec l'id k de la ligne 564
+                // /!\ On envoie au tache le contexte, après avoir choisi l'option, et on sort de la boucle quand on a fini solve au niveau k :peepoez:
+                // faudra faire marcher ca
 
-                #pragma omp task
+                //#pragma omp task
                 solve(instance, ctx);
 
                 if (ctx->solutions >= max_solutions)
                         return;
+                //apres on communique le nb de solutions et on attends une prochaine tacches
+                // Si on veut aller plus loin -> methode arbre binomial comme ca on parallelise le plus possible mais il risque d'avoir plus de noeuds travailleurs
                 unchoose_option(instance, ctx, option, chosen_item);
         }
+        //Typiquement on rajoute une boucle ici pour les proc 1 ... n-1 et on les fait tourner a l'infini, on les arrete avec un signal depuis le programme principal
 
         uncover(instance, ctx, chosen_item);                      /* backtrack */
 }
