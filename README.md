@@ -1,7 +1,13 @@
 # HPC_project
 
-## 1st version
-Only distribute the first level
+
+## MPI
+### 1st version
+* Only distribute the first level
+
+### 2nd version
+* Distribution on the first level, alternate active options 
+
 
 ## Code coverage
 * Mention it in the report

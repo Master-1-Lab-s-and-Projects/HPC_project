@@ -572,18 +572,21 @@ void solve(const struct instance_t *instance, struct context_t *ctx)
     // Distribute first level
     if (ctx->level == 0) {
         if (rank == 0) {
-            printf("Nb of active options: %d\n", active_options->len);
+            //printf("Nb of active options: %d\n", active_options->len);
         }
-        int packet_size = active_options->len / nb_proc;
-        l_bound = rank * packet_size;
-        if (rank != nb_proc - 1)
-            u_bound = l_bound + packet_size;
+        //int packet_size = active_options->len / nb_proc;
+        //l_bound = rank * packet_size;
+        //if (rank != nb_proc - 1)
+        //    u_bound = l_bound + packet_size;
 
-        printf("l:%d, u:%d, ps:%d, rank:%d\n",
-                l_bound, u_bound, packet_size, rank);
+        l_bound = rank;
+        u_bound = active_options->len;
+
+        //printf("l:%d, u:%d, rank:%d\n",
+        //        l_bound, u_bound, rank);
     }
 
-    for (int k = l_bound; k < u_bound; k++) {
+    for (int k = l_bound; k < u_bound;) {
         int option = active_options->p[k];
         ctx->child_num[ctx->level] = k;
         choose_option(instance, ctx, option, chosen_item);
@@ -599,6 +602,10 @@ void solve(const struct instance_t *instance, struct context_t *ctx)
         //apres on communique le nb de solutions et on attends une prochaine tacches
         // Si on veut aller plus loin -> methode arbre binomial comme ca on parallelise le plus possible mais il risque d'avoir plus de noeuds travailleurs
         unchoose_option(instance, ctx, option, chosen_item);
+
+
+        // On ne distribue qu'au premier niveau
+        k += (ctx->level == 0) ? nb_proc : 1;
     }
 
     // Collect results
