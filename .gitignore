@@ -53,3 +53,4 @@ dkms.conf
 
 # Code coverage
 *.gcno
+compile_commands.json

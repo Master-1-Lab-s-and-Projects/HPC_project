@@ -1,5 +1,8 @@
 # HPC_project
 
+## 1st version
+Only distribute the first level
+
 ## Code coverage
 * Mention it in the report
 * [Gcov tuto](https://emblddedinn.xyz/articles/tutorial/test-coverage-analysis-with-gcov/) 
