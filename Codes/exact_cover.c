@@ -10,6 +10,8 @@
 #include <omp.h>
 #include <mpi.h>
 
+#define WAS_CHOSEN 1
+
 
 int rank = 0;       // rang du processus (MPI)
 int nb_proc = 0;    // nombre de processus (MPI)
@@ -187,13 +189,13 @@ void solution_found(const struct instance_t *instance, struct context_t *ctx)
 void cover(const struct instance_t *instance, struct context_t *ctx, int item);
 
 void choose_option(const struct instance_t *instance, struct context_t *ctx,
-        int option, int chosen_item)
+        int option, int chosen_item, int was_chosen)
 {
     ctx->chosen_options[ctx->level] = option;
     ctx->level++;
     for (int p = instance->ptr[option]; p < instance->ptr[option + 1]; p++) {
         int item = instance->options[p];
-        if (item == chosen_item)
+        if (item == chosen_item && was_chosen)
             continue;
         cover(instance, ctx, item);
     }
@@ -314,6 +316,7 @@ void reactivate(const struct instance_t *instance, struct context_t *ctx,
 }
 
 
+// TODO: extract this function in another C source file
 struct instance_t * load_matrix(const char *filename)
 {
     struct instance_t *instance = malloc(sizeof(*instance));
@@ -539,9 +542,30 @@ struct context_t * backtracking_setup(const struct instance_t *instance)
             sparse_array_add(ctx->active_options[item], option);
         }
 
-
-
     return ctx;
+}
+
+void build_context(const struct instance_t *instance,
+        struct context_t *ctx, const int *chosen_options, int n_options)
+{
+    for (int i=0; i < n_options; i++) {
+        choose_option(instance, ctx, chosen_options[i], 0, !WAS_CHOSEN);
+    }
+}
+
+void collect_results(struct context_t *ctx) {
+    printf("Found %lld solutions - %lld nodes - proc of rank %d\n",
+            ctx->solutions, ctx->nodes, rank);
+    if (rank == 0) {
+        for (int i = 1; i < nb_proc; i++) {
+            int rcvd_solutions;
+            MPI_Recv(&rcvd_solutions, 1, MPI_INTEGER, i, tag, MPI_COMM_WORLD, NULL);
+            // receive nb_solution for proc of rank i
+            ctx->solutions += rcvd_solutions;
+        }
+    } else {
+        MPI_Send(&ctx->solutions, 1, MPI_INTEGER, 0, tag, MPI_COMM_WORLD);
+    }
 }
 
 /**
@@ -574,12 +598,8 @@ void solve(const struct instance_t *instance, struct context_t *ctx)
         if (rank == 0) {
             //printf("Nb of active options: %d\n", active_options->len);
         }
-        //int packet_size = active_options->len / nb_proc;
-        //l_bound = rank * packet_size;
-        //if (rank != nb_proc - 1)
-        //    u_bound = l_bound + packet_size;
 
-        l_bound = rank;
+        l_bound = rank - 1;
         u_bound = active_options->len;
 
         //printf("l:%d, u:%d, rank:%d\n",
@@ -589,7 +609,7 @@ void solve(const struct instance_t *instance, struct context_t *ctx)
     for (int k = l_bound; k < u_bound;) {
         int option = active_options->p[k];
         ctx->child_num[ctx->level] = k;
-        choose_option(instance, ctx, option, chosen_item);
+        choose_option(instance, ctx, option, chosen_item, WAS_CHOSEN);
         // On assigne les taches ici, -> idée savoir qu'il ont fini leur travail quand il sort de cette boucle avec l'id k de la ligne 564
         // /!\ On envoie au tache le contexte, après avoir choisi l'option, et on sort de la boucle quand on a fini solve au niveau k :peepoez:
         // faudra faire marcher ca
@@ -605,28 +625,42 @@ void solve(const struct instance_t *instance, struct context_t *ctx)
 
 
         // On ne distribue qu'au premier niveau
-        k += (ctx->level == 0) ? nb_proc : 1;
+        k += (ctx->level == 0) ? (nb_proc - 1) : 1;
     }
 
     // Collect results
-    if (ctx->level == 0) {
-        printf("Found %lld solutions - %lld nodes - proc of rank %d\n",
-                ctx->solutions, ctx->nodes, rank);
-        if (rank == 0) {
-            for (int i = 1; i < nb_proc; i++) {
-                int rcvd_solutions;
-                MPI_Recv(&rcvd_solutions, 1, MPI_INTEGER, i, tag, MPI_COMM_WORLD, NULL);
-                // receive nb_solution for proc of rank i
-                ctx->solutions += rcvd_solutions;
-            }
-        } else {
-            MPI_Send(&ctx->solutions, 1, MPI_INTEGER, 0, tag, MPI_COMM_WORLD);
-        }
+    if (ctx->level == 0 && 0) {
+        collect_results(ctx);
     }
 
     //Typiquement on rajoute une boucle ici pour les proc 1 ... n-1 et on les fait tourner a l'infini, on les arrete avec un signal depuis le programme principal
 
     uncover(instance, ctx, chosen_item);                      /* backtrack */
+}
+
+void launch_parallel(const struct instance_t *instance, struct context_t *ctx)
+{
+    if (rank == 0) {
+        printf("nb_proc: %d\n", nb_proc);
+
+        // loop to collect results
+        for (int i = 1; i < nb_proc; i++) {
+            long long rcvd_solutions;
+            MPI_Recv(&rcvd_solutions, 1, MPI_LONG_LONG_INT, i, tag, MPI_COMM_WORLD, NULL);
+            ctx->solutions += rcvd_solutions; // use ctx ????
+
+            printf("Received %lld solutions from proc %d\n",
+                    rcvd_solutions, i);
+        }
+
+        printf("FINI. Trouvé %lld solutions en %.1fs\n", ctx->solutions,
+                wtime() - start);
+    } else {
+        // loop to re-launch when done
+        solve(instance, ctx);
+        MPI_Send(&ctx->solutions, 1, MPI_INTEGER, 0, tag, MPI_COMM_WORLD);
+    }
+
 }
 
 int main(int argc, char **argv)
@@ -670,16 +704,8 @@ int main(int argc, char **argv)
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &nb_proc);
 
-    if (rank == 0)
-        printf("nb_proc: %d\n", nb_proc);
+    launch_parallel(instance, ctx);
 
-    solve(instance, ctx);
-
-
-    if (rank == 0) {
-        printf("FINI. Trouvé %lld solutions en %.1fs\n", ctx->solutions,
-                wtime() - start);
-    }
     MPI_Finalize();
     exit(EXIT_SUCCESS);
 }

@@ -1,5 +1,9 @@
 # HPC_project
 
+## TODO
+* separate functions in at least 2 C sources file
+* write a makefile
+
 
 ## MPI
 ### 1st version
