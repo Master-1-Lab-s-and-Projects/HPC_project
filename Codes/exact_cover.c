@@ -13,9 +13,10 @@
 #define WAS_CHOSEN 1
 
 
-int rank = 0;       // rang du processus (MPI)
-int nb_proc = 0;    // nombre de processus (MPI)
-int tag = 1;        // tag utilisé pour la communication (MPI)
+int rank = 0;           // rang du processus (MPI)
+int nb_proc = 0;        // nombre de processus (MPI)
+int solution_tag = 1;   // solution_tag utilisé pour la communication du nb de solutions (MPI)
+int proc_status_tag = 2;  // proc_status_tag utilisé pour la communication de l'avancement des proc (MPI)
 
 double start = 0.0;
 
@@ -24,6 +25,10 @@ bool print_solutions = false;          // affiche chaque solution
 long long report_delta = 1e6;          // affiche un rapport tous les ... noeuds
 long long next_report;                 // prochain rapport affiché au noeud...
 long long max_solutions = 0x7fffffffffffffff;        // stop après ... solutions
+
+int *distribution_buffer = NULL;
+int *status_buffer = NULL;      // contient la len, les child_num, et les upper_bounds du context
+int **procs_status = NULL;      // contient les status de tous les procs esclaves
 
 
 struct instance_t {
@@ -48,6 +53,8 @@ struct context_t {
     int *chosen_options;                      // options choisies à ce stade
     int *child_num;                           // numéro du fils exploré
     int *num_children;                        // nombre de fils à explorer
+    int *lower_bounds;                        //
+    int *upper_bounds;
     int level;                                // nombre d'options choisies
     long long nodes;                          // nombre de noeuds explorés
     long long solutions;                      // nombre de solutions trouvées
@@ -518,8 +525,15 @@ struct context_t * backtracking_setup(const struct instance_t *instance)
     ctx->chosen_options = malloc(n * sizeof(*ctx->chosen_options));
     ctx->child_num = malloc(n * sizeof(*ctx->child_num));
     ctx->num_children = malloc(n * sizeof(*ctx->num_children));
+    ctx->lower_bounds = malloc(n * sizeof(*ctx->lower_bounds));
+    ctx->upper_bounds = malloc(n * sizeof(*ctx->upper_bounds));
+
+    status_buffer = malloc((2 * n + 1) * sizeof(*status_buffer));
+
     if (ctx->active_options == NULL || ctx->chosen_options == NULL
-            || ctx->child_num == NULL || ctx->num_children == NULL)
+            || ctx->child_num == NULL || ctx->num_children == NULL
+            || ctx->lower_bounds == NULL || ctx->upper_bounds == NULL
+            || status_buffer == NULL)
         err(1, "impossible d'allouer le contexte");
     ctx->active_items = sparse_array_init(n);
 
@@ -545,6 +559,26 @@ struct context_t * backtracking_setup(const struct instance_t *instance)
     return ctx;
 }
 
+void print_sparse_array(struct sparse_array_t *arr) {
+    printf("[");
+    for (int i=0; i < arr->len; i++)
+        printf("%d%s", arr->p[i], (i == arr->len - 1)? "]\n": ", ");
+}
+
+void print_context(const struct context_t *ctx) {
+    printf("Context: \n");
+    printf("* active_items: ");
+    print_sparse_array(ctx->active_items);
+
+    printf("* active_options: \n");
+    for (int i=0; i < ctx->active_items->len; i++) {
+        int item = ctx->active_items->p[i];
+        printf("\t%d, ", item);
+        print_sparse_array(ctx->active_options[item]);
+    }
+    printf("\n");
+}
+
 void build_context(const struct instance_t *instance,
         struct context_t *ctx, const int *chosen_options, int n_options)
 {
@@ -559,13 +593,51 @@ void collect_results(struct context_t *ctx) {
     if (rank == 0) {
         for (int i = 1; i < nb_proc; i++) {
             int rcvd_solutions;
-            MPI_Recv(&rcvd_solutions, 1, MPI_INTEGER, i, tag, MPI_COMM_WORLD, NULL);
+            MPI_Recv(&rcvd_solutions, 1, MPI_INTEGER, i, solution_tag, MPI_COMM_WORLD, NULL);
             // receive nb_solution for proc of rank i
             ctx->solutions += rcvd_solutions;
         }
     } else {
-        MPI_Send(&ctx->solutions, 1, MPI_INTEGER, 0, tag, MPI_COMM_WORLD);
+        MPI_Send(&ctx->solutions, 1, MPI_INTEGER, 0, solution_tag, MPI_COMM_WORLD);
     }
+}
+
+int master_asked_status()
+{
+    MPI_Status status;
+    MPI_Request request;
+    int res;
+    MPI_Irecv(&res, 1, MPI_INTEGER, 0, proc_status_tag, MPI_COMM_WORLD, &request);
+    int req_completed;
+    MPI_Test(&request, &req_completed, &status);
+
+    return req_completed;
+}
+
+/**
+ * Sends upper_bounds, and child_num to the master
+ */
+void send_status(const struct instance_t *instance, const struct context_t *ctx)
+{
+    int n = instance->n_items;
+    status_buffer[0] = n;
+    memcpy(status_buffer + 1, ctx->child_num, n * sizeof(*ctx->child_num));
+    memcpy(status_buffer + 1 + n, ctx->upper_bounds, n * sizeof(*ctx->upper_bounds));
+    MPI_Send(status_buffer, 2 * n + 1, MPI_INTEGER, 0, proc_status_tag, MPI_COMM_WORLD);
+}
+
+void distribute_work(const struct instance_t *instance, struct context_t *ctx)
+{
+    int distribution_level = 0; // get the highest level not completed
+    int lower_bound = ctx->child_num[distribution_level] + 1; // First approx
+    ctx->upper_bounds[distribution_level] = lower_bound;
+
+    distribution_buffer[0] = distribution_level;
+    distribution_buffer[1] = lower_bound;
+    memcpy(distribution_buffer + 2, ctx->chosen_options, instance->n_items);
+
+    MPI_Send(distribution_buffer, 2 + instance->n_items, MPI_INTEGER, 0,
+            proc_status_tag, MPI_COMM_WORLD);
 }
 
 /**
@@ -581,6 +653,11 @@ void solve(const struct instance_t *instance, struct context_t *ctx)
         return;                         /* succès : plus d'objet actif */
     }
 
+    if (master_asked_status()) {
+        send_status(instance, ctx);
+    }
+
+
     int chosen_item = choose_next_item(ctx);
     struct sparse_array_t *active_options = ctx->active_options[chosen_item];
     if (sparse_array_empty(active_options))
@@ -590,8 +667,10 @@ void solve(const struct instance_t *instance, struct context_t *ctx)
     ctx->num_children[ctx->level] = active_options->len;
 
 
-    int l_bound = 0;
-    int u_bound = active_options->len;
+    int *l_bounds = ctx->lower_bounds;
+    int *u_bounds = ctx->upper_bounds;
+    l_bounds[ctx->level] = 0;
+    u_bounds[ctx->level] = active_options->len;
 
     // Distribute first level
     if (ctx->level == 0) {
@@ -599,14 +678,14 @@ void solve(const struct instance_t *instance, struct context_t *ctx)
             //printf("Nb of active options: %d\n", active_options->len);
         }
 
-        l_bound = rank - 1;
-        u_bound = active_options->len;
+        l_bounds[ctx->level] = rank - 1;
 
         //printf("l:%d, u:%d, rank:%d\n",
         //        l_bound, u_bound, rank);
     }
 
-    for (int k = l_bound; k < u_bound;) {
+
+    for (int k = l_bounds[ctx->level]; k < u_bounds[ctx->level];) {
         int option = active_options->p[k];
         ctx->child_num[ctx->level] = k;
         choose_option(instance, ctx, option, chosen_item, WAS_CHOSEN);
@@ -628,39 +707,110 @@ void solve(const struct instance_t *instance, struct context_t *ctx)
         k += (ctx->level == 0) ? (nb_proc - 1) : 1;
     }
 
-    // Collect results
-    if (ctx->level == 0 && 0) {
-        collect_results(ctx);
-    }
-
     //Typiquement on rajoute une boucle ici pour les proc 1 ... n-1 et on les fait tourner a l'infini, on les arrete avec un signal depuis le programme principal
 
     uncover(instance, ctx, chosen_item);                      /* backtrack */
 }
 
+
+int choose_proc_to_distribute(int proc_to_exclude, int nb_items) {
+    int cmd = 1;
+    for (int i = 1; i < nb_proc; i++) {
+        if (i == proc_to_exclude)
+            continue;
+
+        MPI_Send(&cmd, 1, MPI_INTEGER, i, proc_status_tag, MPI_COMM_WORLD);
+        MPI_Recv(procs_status[i - 1], 2 * nb_items + 1, MPI_INTEGER,
+                i, proc_status_tag, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    }
+
+    // TODO, find which process is the least 'advanced'
+    return -1;
+}
+
+int wait_for_done_proc(long long *rcvd_solutions)
+{
+    MPI_Status status;
+    MPI_Recv(rcvd_solutions, 1, MPI_LONG_LONG_INT, MPI_ANY_SOURCE,
+            solution_tag, MPI_COMM_WORLD, &status);
+    return status.MPI_SOURCE;
+}
+
+void distribute_work_master(int worker, int freeloader)
+{
+    /**
+     * To distribute work we need to get:
+     * - the level 'l' to distribute
+     * - the first 'l' chosen options
+     * - the lower bound for the level 'l'
+     */
+}
+
 void launch_parallel(const struct instance_t *instance, struct context_t *ctx)
 {
     if (rank == 0) {
-        printf("nb_proc: %d\n", nb_proc);
+        printf("Number of proc: %d\n", nb_proc);
 
-        // loop to collect results
-        for (int i = 1; i < nb_proc; i++) {
+        while (1) {
             long long rcvd_solutions;
-            MPI_Recv(&rcvd_solutions, 1, MPI_LONG_LONG_INT, i, tag, MPI_COMM_WORLD, NULL);
-            ctx->solutions += rcvd_solutions; // use ctx ????
+            int done_proc;
+            int proc_to_distribute;
+
+            done_proc = wait_for_done_proc(&rcvd_solutions);
+            ctx->solutions += rcvd_solutions;
 
             printf("Received %lld solutions from proc %d\n",
-                    rcvd_solutions, i);
+                    rcvd_solutions, done_proc);
+
+            if (/* some condition on the depth */ 1) {
+                proc_to_distribute = choose_proc_to_distribute(done_proc, instance->n_items);
+                distribute_work(proc_to_distribute, done_proc);
+            }
         }
 
         printf("FINI. Trouvé %lld solutions en %.1fs\n", ctx->solutions,
                 wtime() - start);
+
     } else {
+        int not_done = 1;
         // loop to re-launch when done
-        solve(instance, ctx);
-        MPI_Send(&ctx->solutions, 1, MPI_INTEGER, 0, tag, MPI_COMM_WORLD);
+        while (not_done) {
+            solve(instance, ctx);
+            MPI_Send(&ctx->solutions, 1, MPI_INTEGER, 0, solution_tag, MPI_COMM_WORLD);
+
+            // not done should contain the 'next order'
+            MPI_Recv(&not_done, 1, MPI_INTEGER, 0, 0xffff, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            // build new context
+        }
+
+    }
+}
+
+void parallel_setup(const struct instance_t *instance)
+{
+    int n = instance->n_items;
+    if (rank == 0) {
+        procs_status = malloc((nb_proc - 1) * sizeof(*procs_status));
+        // TODO
+        if (procs_status == NULL)
+            err(1, "impossible d'allouer le buffer de status");
+
+        for (int i=0; i < nb_proc - 1; i++) {
+            procs_status[i] = malloc((2 * n + 1) * sizeof(*procs_status[i]));
+            // TODO
+            if (procs_status[i] == NULL)
+                err(1, "impossible d'allouer le buffer de status");
+        }
+
+    } else {
+        status_buffer = malloc((2 * n + 1) * sizeof(*status_buffer));
+        if (status_buffer == NULL)
+            err(1, "impossible d'allouer le buffer de status");
     }
 
+    distribution_buffer = malloc((n + 2) * sizeof(*distribution_buffer));
+    if (distribution_buffer == NULL)
+        err(1, "impossible d'allouer le buffer des options choisies");
 }
 
 int main(int argc, char **argv)
@@ -704,6 +854,11 @@ int main(int argc, char **argv)
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &nb_proc);
 
+    if (rank == 0) {
+        print_context(ctx);
+    }
+
+    parallel_setup(instance);
     launch_parallel(instance, ctx);
 
     MPI_Finalize();
