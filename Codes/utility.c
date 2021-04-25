@@ -47,7 +47,7 @@ void print_context(const struct context_t *ctx)
 void progress_report(const struct context_t *ctx)
 {
     double now = wtime();
-    printf("[rank %d] Exploré %lld noeuds, trouvé %lld solutions, temps écoulé %.1fs. ",
+    printf("Proc [%d] Exploré %lld noeuds, trouvé %lld solutions, temps écoulé %.1fs. ",
             rank, ctx->nodes, ctx->solutions, now - start);
     int i = 0;
     for (int k = 0; k < ctx->level; k++) {

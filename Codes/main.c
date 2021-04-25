@@ -1,3 +1,6 @@
+#define _POSIX_C_SOURCE 200112L
+#include <unistd.h>
+
 #include "datastructure.h"
 #include "matrix_parser.h"
 #include "utility.h"
@@ -34,11 +37,13 @@ void usage(char **argv)
 
 int main(int argc, char **argv)
 {
-    struct option longopts[5] = {
+    bool debug_mode = false;
+    struct option longopts[6] = {
         {"in", required_argument, NULL, 'i'},
         {"progress-report", required_argument, NULL, 'v'},
         {"print-solutions", no_argument, NULL, 'p'},
         {"stop-after", required_argument, NULL, 's'},
+        {"debugging", no_argument, NULL, 'g'},
         {NULL, 0, NULL, 0}
     };
     char ch;
@@ -56,6 +61,9 @@ int main(int argc, char **argv)
             case 'v':
                 report_delta = atoll(optarg);
                 break;
+            case 'g':
+                debug_mode = true;
+                break;
             default:
                 errx(1, "Unknown option\n");
         }
@@ -72,6 +80,18 @@ int main(int argc, char **argv)
     MPI_Init(NULL, NULL);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &nb_proc);
+
+    // DEBUGGING CODE
+    if (debug_mode && rank != 2) {
+        int ifl = 0;
+        char hostname[256];
+        gethostname(hostname, sizeof(hostname));
+        printf("PID %d on %s ready for attach, rank [%d]\n", getpid(), hostname, rank);
+        fflush(stdout);
+        while (0 == ifl)
+            sleep(5);
+    }
+    // DEBUGGING CODE
 
     parallel_setup(instance);
     launch_parallel(instance, ctx);

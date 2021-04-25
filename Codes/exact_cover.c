@@ -8,6 +8,7 @@
 #include <mpi.h>
 
 #define WAS_CHOSEN 1
+#define DISTRIBUTION_LEVEL_THRESHOLD 2
 
 const int MPI_TAG_SOLUTION_COUNT = 1;   // tag pour la communication du nb de solutions (MPI)
 const int MPI_TAG_STATUS_QUERY = 2;     // tag pour la demande d'état du context d'un proc (MPI)
@@ -18,6 +19,8 @@ const int MPI_TAG_NEW_WORK = 4;         // tag pour l'envoi d'un nouveau travail
 int *distribution_buffer = NULL;    //
 int *status_buffer = NULL;          // contient la len, les child_num, et les upper_bounds du context
 int **procs_status = NULL;          // contient les status de tous les procs esclaves
+
+bool bypass = false;
 
 
 void solution_found(const struct instance_t *instance, struct context_t *ctx)
@@ -150,16 +153,24 @@ void reactivate(const struct instance_t *instance, struct context_t *ctx,
 int master_queried(int tag)
 {
     MPI_Status status;
-    MPI_Request request;
+    //MPI_Request request;
 
-    //if (rank == 1)
+    //if (rank == 1 && tag == MPI_TAG_STATUS_QUERY && ctx->solutions > 1300000)
     //    printf("Proc [%d]: here\n", rank);
 
     bool query_value = false;
-    MPI_Irecv(&query_value, 1, MPI_C_BOOL, 0, tag, MPI_COMM_WORLD, &request);
+    int request_completed = 1;
+    if (rank == 1) {
+        if (MPI_Recv(&query_value, 1, MPI_C_BOOL, 0, tag, MPI_COMM_WORLD, &status)
+                != MPI_SUCCESS)
+            printf("Proc [%d]: query unsuccessful[_%d_]\n", rank, tag);
 
-    int request_completed;
-    MPI_Test(&request, &request_completed, &status);
+        //if (query_value)
+        //    printf("Proc [%d]: query [_%d_]\n", rank, tag);
+
+        //MPI_Test(&request, &request_completed, &status);
+    }
+
 
     return request_completed && query_value;
 }
@@ -170,33 +181,69 @@ int master_queried(int tag)
 void send_status(const struct instance_t *instance, const struct context_t *ctx)
 {
     int n = instance->n_items;
-    status_buffer[0] = n;
-    memcpy(status_buffer + 1, ctx->child_num, n * sizeof(*ctx->child_num));
-    memcpy(status_buffer + 1 + n, ctx->upper_bounds, n * sizeof(*ctx->upper_bounds));
+    status_buffer[0] = ctx->level;
+    memcpy(status_buffer + 1, ctx->child_num,
+            (ctx->level + 1) * sizeof(*ctx->child_num));
+    memcpy(status_buffer + 1 + n, ctx->upper_bounds,
+            (ctx->level + 1) * sizeof(*ctx->upper_bounds));
+    printf("Proc [%d]: sending STATUS to master\n", rank);
 
     MPI_Send(status_buffer, 2 * n + 1, MPI_INTEGER, 0,
             MPI_TAG_STATUS_QUERY, MPI_COMM_WORLD);
     printf("Proc [%d]: STATUS sent to master\n", rank);
 }
 
+int get_distribution_lvl(const struct context_t *ctx)
+{
+    int distrib_lvl = 0; // get the highest level not completed
+
+    // TODO: fix ---> it has to be pretty
+    if (ctx->child_num[0] + nb_proc - 1 >= ctx->upper_bounds[0])
+        distrib_lvl++;
+
+    while (ctx->child_num[distrib_lvl] + 1 >= ctx->upper_bounds[distrib_lvl])
+        distrib_lvl++;
+
+    return distrib_lvl;
+}
+
 void distribute_work(const struct instance_t *instance, struct context_t *ctx)
 {
     int distrib_lvl = 0; // get the highest level not completed
-    while (ctx->child_num[distrib_lvl] == ctx->upper_bounds[distrib_lvl] - 1)
+
+    // TODO: fix ---> it has to be pretty
+    if (ctx->child_num[0] + nb_proc - 1 >= ctx->upper_bounds[0])
         distrib_lvl++;
+
+    while (ctx->child_num[distrib_lvl] + 1 >= ctx->upper_bounds[distrib_lvl])
+        distrib_lvl++;
+
 
     int distrib_l_bound = ctx->child_num[distrib_lvl];
     // At the first level, the proc alternate between children
-    distrib_l_bound += (distrib_lvl == 0) ? nb_proc - 1 : 1;
+    distrib_l_bound += (distrib_lvl == 0) ? nb_proc - 1 : 1; // -1, the master does not work
     ctx->upper_bounds[distrib_lvl] = distrib_l_bound;
 
+    if (distrib_lvl > DISTRIBUTION_LEVEL_THRESHOLD) {
+        distrib_lvl = -1;
+        bypass = true;
+        printf("Proc [%d]: === WILL NOT DISTRIBUTE ANYMORE ===\n", rank);
+    }
 
     distribution_buffer[0] = distrib_lvl;
     distribution_buffer[1] = distrib_l_bound;
-    memcpy(distribution_buffer + 2, ctx->chosen_options, instance->n_items);
 
+    if (distrib_lvl > 0)
+        memcpy(distribution_buffer + 2, ctx->chosen_options, distrib_lvl * sizeof(*distribution_buffer));
+
+    printf("Proc [%d]: distributing level %d from child %d. New upper_bound: %d\n",
+            rank, distrib_lvl, distrib_l_bound,
+            (distrib_lvl == -1) ? -1 : ctx->upper_bounds[distrib_lvl]);
+
+    printf("Proc [%d]: sending DISTRIB_INFO to master\n", rank);
     MPI_Send(distribution_buffer, 2 + instance->n_items, MPI_INTEGER, 0,
             MPI_TAG_DISTRIB_QUERY, MPI_COMM_WORLD);
+    printf("Proc [%d]: sent DISTRIB_INFO to master\n", rank);
 }
 
 /**
@@ -210,8 +257,8 @@ void distribute_work(const struct instance_t *instance, struct context_t *ctx)
  *
  * Note: only the lower bound need to be specified.
  */
-void solve(const struct instance_t *instance, struct context_t *ctx,
-        int lower_bound)
+void solve(const struct instance_t * const instance,
+        struct context_t * const ctx, int lower_bound)
 {
     ctx->nodes++;
     if (ctx->nodes == next_report)
@@ -219,15 +266,6 @@ void solve(const struct instance_t *instance, struct context_t *ctx,
     if (sparse_array_empty(ctx->active_items)) {
         solution_found(instance, ctx);
         return;                         /* succès : plus d'objet actif */
-    }
-
-    if (master_queried(MPI_TAG_STATUS_QUERY)) {
-        printf("Proc [%d]: Master STATUS query received\n", rank);
-        send_status(instance, ctx);
-    }
-    if (master_queried(MPI_TAG_DISTRIB_QUERY)) {
-        printf("Proc [%d]: Master DISTRIB query received\n", rank);
-        distribute_work(instance, ctx);
     }
 
 
@@ -243,6 +281,17 @@ void solve(const struct instance_t *instance, struct context_t *ctx,
     ctx->lower_bounds[ctx->level] = (lower_bound == -1) ? 0 : lower_bound;
     ctx->upper_bounds[ctx->level] = active_options->len;
 
+    if (wtime() - start > 5 && !bypass) {
+        if (master_queried(MPI_TAG_STATUS_QUERY)) {
+            printf("Proc [%d]: Master requested STATUS\n", rank);
+            send_status(instance, ctx);
+        }
+
+        if (master_queried(MPI_TAG_DISTRIB_QUERY)) {
+            printf("Proc [%d]: Master requested DISTRIBUTION\n", rank);
+            distribute_work(instance, ctx);
+        }
+    }
 
     for (int k = ctx->lower_bounds[ctx->level]; k < ctx->upper_bounds[ctx->level];) {
         int option = active_options->p[k];
@@ -288,15 +337,19 @@ int choose_proc_to_distribute(int proc_to_exclude, int nb_items)
         if (i == proc_to_exclude)
             continue;
 
-        printf("#1\n");
+        memset(procs_status[i - 1], 0, (2 * nb_items + 1) * sizeof(*procs_status[0]));
+
+        printf("MASTER: query STATUS of proc [%d]\n", i);
         // Collect the status of each process.
         bool query_status = true;
         MPI_Send(&query_status, 1, MPI_C_BOOL,
                 i, MPI_TAG_STATUS_QUERY, MPI_COMM_WORLD);
         printf("#2\n");
 
-        MPI_Recv(procs_status[i - 1], 2 * nb_items + 1, MPI_INTEGER, i,
-                MPI_TAG_STATUS_QUERY, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        if (MPI_Recv(procs_status[i - 1], 2 * nb_items + 1, MPI_INTEGER, i,
+                    MPI_TAG_STATUS_QUERY, MPI_COMM_WORLD, MPI_STATUS_IGNORE)
+                != MPI_SUCCESS)
+            printf("Master: reception error");
 
         printf("Master recvd status of proc [%d]\n", i);
         // Determine the lowest level in the
@@ -339,7 +392,7 @@ int choose_proc_to_distribute(int proc_to_exclude, int nb_items)
     }
 
     /** TODO add a threshold. Example
-     *  if (highest_not_completed_lvl > A_CERTAIN_DEPTH) // based on the number of items
+     *  if (highest_not_completed_lvl > A_CER TAIN_DEPTH) // based on the number of items
      *      proc_to_distribute = -1; // equiv. to: do not distribute
      */
 
@@ -347,7 +400,7 @@ int choose_proc_to_distribute(int proc_to_exclude, int nb_items)
 }
 
 void distribute_work_master(const struct instance_t *instance,
-        int worker, int freeloader)
+        int worker, int *distribution_buffer)
 {
     /**
      * To distribute work we need to get:
@@ -356,19 +409,28 @@ void distribute_work_master(const struct instance_t *instance,
      * - the lower bound for the level 'l'
      */
 
+    bool query_value = true;
+    MPI_Send(&query_value, 1, MPI_C_BOOL, worker,
+            MPI_TAG_DISTRIB_QUERY, MPI_COMM_WORLD);
+    printf("Master: sent DISTRIB_QUERY to proc [%d]\n", worker);
+
     MPI_Recv(distribution_buffer, 2 + instance->n_items, MPI_INTEGER, worker,
             MPI_TAG_DISTRIB_QUERY, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    printf("Master: rcvd DISTRIB_QUERY response from proc [%d]\n", worker);
 
-    MPI_Send(distribution_buffer, 2 + instance->n_items, MPI_INTEGER, freeloader,
-            MPI_TAG_NEW_WORK, MPI_COMM_WORLD);
 }
 
 void build_context(const struct instance_t *instance,
         struct context_t *ctx, const int *chosen_options, int n_options)
 {
+    ctx->solutions = 0;
+    // We don't reset the number of nodes browsed. This allows us
+    // to check that all the branches have been explored.
+
     for (int i=0; i < n_options; i++) {
         choose_option(instance, ctx, chosen_options[i], -1, !WAS_CHOSEN);
     }
+    printf("Proc [%d]: Context built, level = %d\n", rank, ctx->level);
 }
 
 void reset_context(const struct instance_t *instance,
@@ -395,26 +457,28 @@ void launch_parallel(const struct instance_t *instance, struct context_t *ctx)
             ctx->solutions += rcvd_solutions;
             nb_free_worker++;
 
-            printf("Received %lld solutions from proc %d\n",
-                    rcvd_solutions, done_proc);
+            printf("Master: Received %lld solutions from proc %d. "
+                    "Total solutions: %lld.\n",
+                    rcvd_solutions, done_proc, ctx->solutions);
 
             if (distribute_remaining_work) {
                 int proc_to_distribute;
                 proc_to_distribute = choose_proc_to_distribute(done_proc, instance->n_items);
-                if (proc_to_distribute == -1) {
+                printf("Master: proc n°%d will distribute its work\n", proc_to_distribute);
+
+                distribute_work_master(instance, proc_to_distribute, distribution_buffer);
+
+                if (distribution_buffer[0] == -1) {
                     distribute_remaining_work = false;
+                    printf("Master: === END of DISTRIBUTION ===\n");
                 } else {
-                    distribute_work_master(instance, proc_to_distribute, done_proc);
                     nb_free_worker--;
                 }
             }
 
-            if (!distribute_remaining_work) {
-                distribution_buffer[0] = -1;
-                MPI_Send(distribution_buffer, 2 + instance->n_items, MPI_INTEGER,
-                        done_proc, MPI_TAG_NEW_WORK, MPI_COMM_WORLD);
-            }
-
+            MPI_Send(distribution_buffer, 2 + instance->n_items, MPI_INTEGER,
+                    done_proc, MPI_TAG_NEW_WORK, MPI_COMM_WORLD);
+            printf("Master: sent NEW_WORK to proc [%d]\n", done_proc);
         }
 
         printf("FINI. Trouvé %lld solutions en %.1fs\n", ctx->solutions,
@@ -451,6 +515,8 @@ void launch_parallel(const struct instance_t *instance, struct context_t *ctx)
                     rank, distribution_buffer[0], distribution_buffer[1]);
 
         } while(distribution_buffer[0] != -1);
+
+        printf("Proc [%d]: DONE\n", rank);
     }
 }
 
@@ -507,6 +573,13 @@ struct context_t * backtracking_setup(const struct instance_t *instance)
             || ctx->lower_bounds == NULL || ctx->upper_bounds == NULL
             || status_buffer == NULL)
         err(1, "impossible d'allouer le contexte");
+
+    memset(ctx->child_num, 0, n * sizeof(*ctx->child_num));
+    memset(ctx->num_children, 0, n * sizeof(*ctx->num_children));
+    memset(ctx->lower_bounds, 0, n * sizeof(*ctx->lower_bounds));
+    memset(ctx->upper_bounds, 0, n * sizeof(*ctx->upper_bounds));
+
+
     ctx->active_items = sparse_array_init(n);
 
     // TODO: probably not possible... modification to array

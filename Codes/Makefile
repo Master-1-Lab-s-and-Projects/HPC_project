@@ -1,6 +1,6 @@
 TARGET = exact_cover.exe
 CC = mpicc
-CFLAGS = -Wall 
+CFLAGS = -Wall -O0 -g 
 
 .PHONY: clean all default cleanall
 
@@ -15,7 +15,7 @@ $(TARGET): $(OBJ)
 	$(CC) $(CFLAGS) -o $@ $(OBJ)
 
 %.o: %.c
-	bear -a $(CC) -c -o $@ $<
+	bear -a $(CC) $(CFLAGS) -c -o $@ $<
 
 clean:
 	-rm -f $(OBJ)
