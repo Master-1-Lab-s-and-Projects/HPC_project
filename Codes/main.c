@@ -82,7 +82,7 @@ int main(int argc, char **argv)
     MPI_Comm_size(MPI_COMM_WORLD, &nb_proc);
 
     // DEBUGGING CODE
-    if (debug_mode && rank != 2) {
+    if (debug_mode && rank == 2) {
         int ifl = 0;
         char hostname[256];
         gethostname(hostname, sizeof(hostname));
