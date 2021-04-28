@@ -7,6 +7,7 @@
 
 #include <mpi.h>
 
+#define nb_worker (nb_proc - 1)
 #define WAS_CHOSEN 1
 #define DISTRIBUTION_LEVEL_THRESHOLD 0
 
@@ -257,6 +258,8 @@ void solve(const struct instance_t * const instance,
     if (ctx->nodes == next_report)
         progress_report(ctx);
     if (sparse_array_empty(ctx->active_items)) {
+        if (rank == 2 && ctx->lower_bounds[0] == 2046)
+            printf("Proc [%d]: Solution found\n", rank);
         solution_found(instance, ctx);
         return;                         /* succès : plus d'objet actif */
     }
@@ -292,8 +295,8 @@ void solve(const struct instance_t * const instance,
     }
 
     for (int k = ctx->lower_bounds[ctx->level]; k < ctx->upper_bounds[ctx->level];) {
-        //if (ctx->level == 0 && rank == 1)
-        //    printf("Proc [%d]: for looop, k = %d\n", rank, k);
+        if (ctx->level == 0)
+            printf("Proc [%d]: for looop, k = %d\n", rank, k);
         int option = active_options->p[k];
         ctx->child_num[ctx->level] = k;
         choose_option(instance, ctx, option, chosen_item, WAS_CHOSEN);
@@ -450,7 +453,7 @@ void launch_parallel(const struct instance_t *instance, struct context_t *ctx)
         printf("Number of proc: %d\n", nb_proc);
 
         int nb_free_worker = 0;
-        bool distribute_remaining_work = true;
+
         while (nb_free_worker < nb_proc - 1) {
             long long rcvd_solutions;
             int done_proc;
@@ -464,20 +467,20 @@ void launch_parallel(const struct instance_t *instance, struct context_t *ctx)
                     "Total solutions: %lld.\n",
                     rcvd_solutions, done_proc, ctx->solutions);
 
-            if (distribute_remaining_work) {
+            distribution_buffer[0] = -1;
+            if (nb_free_worker == 1 && done_proc == 2) {
                 int proc_to_distribute;
                 proc_to_distribute = choose_proc_to_distribute(done_proc, instance->n_items);
                 printf("Master: proc n°%d will distribute its work\n", proc_to_distribute);
 
-                distribute_work_master(instance, proc_to_distribute, distribution_buffer);
-
-                if (distribution_buffer[0] == -1) {
-                    distribute_remaining_work = false;
+                if (proc_to_distribute == -1) {
                     printf("Master: === END of DISTRIBUTION ===\n");
                 } else {
+                    distribute_work_master(instance, proc_to_distribute, distribution_buffer);
                     nb_free_worker--;
                 }
             }
+
 
             MPI_Send(distribution_buffer, 2 + instance->n_items, MPI_INTEGER,
                     done_proc, MPI_TAG_NEW_WORK, MPI_COMM_WORLD);
