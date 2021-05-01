@@ -7,6 +7,7 @@
 #include <assert.h>
 
 #include <mpi.h>
+#include <omp.h>
 
 #ifdef DEBUG
     #define DPRINTF(...) printf(__VA_ARGS__)
