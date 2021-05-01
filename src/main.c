@@ -82,14 +82,15 @@ int main(int argc, char **argv)
     MPI_Comm_size(MPI_COMM_WORLD, &nb_proc);
 
     // DEBUGGING CODE
-    if (debug_mode && rank == 2) {
+    if (debug_mode) {
         int ifl = 0;
         char hostname[256];
         gethostname(hostname, sizeof(hostname));
         printf("PID %d on %s ready for attach, rank [%d]\n", getpid(), hostname, rank);
         fflush(stdout);
-        while (0 == ifl)
+        while (ifl == 0) {
             sleep(5);
+        }
     }
     // DEBUGGING CODE
 
