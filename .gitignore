@@ -56,7 +56,7 @@ dkms.conf
 compile_commands.json
 
 # build
-build/
+build_*/
 
 # results
 *.png

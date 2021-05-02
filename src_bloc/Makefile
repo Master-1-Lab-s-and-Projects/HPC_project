@@ -1,12 +1,12 @@
 TARGET = exact_cover.exe
 CC = mpicc
-CFLAGS = -Wall -O3 -fopenmp#-O0 -g
+CFLAGS = -Wall -O3
 
 .PHONY: clean all default cleanall
 
-BUILD_DIR=../build
+BUILD_DIR=../build_bloc
 
-SRC = main.c datastructure.c exact_cover.c utility.c matrix_parser.c
+SRC = exact_cover.c 
 OBJ_DEPS = $(SRC:.c=.o)
 OBJ = $(patsubst %,$(BUILD_DIR)/%,$(OBJ_DEPS))
 
@@ -18,7 +18,8 @@ $(TARGET): $(OBJ)
 	$(CC) $(CFLAGS) -o $@ $(OBJ)
 
 $(BUILD_DIR)/%.o: %.c
-	bear -a $(CC) $(CFLAGS) -c -o $@ $<
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -c -o $@ $<
 
 clean:
 	-rm -f $(OBJ)
