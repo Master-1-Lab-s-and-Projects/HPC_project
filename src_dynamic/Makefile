@@ -19,7 +19,7 @@ $(TARGET): $(OBJ)
 
 $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) -c -o $@ $<
+	bear -a $(CC) $(CFLAGS) -c -o $@ $<
 
 clean:
 	-rm -f $(OBJ)
