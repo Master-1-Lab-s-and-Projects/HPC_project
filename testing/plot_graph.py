@@ -1,28 +1,51 @@
 import matplotlib.pyplot as plt
 import numpy as np
+import sys
+import os
 
+GRAPH_DIR="graphs/"
 
-def plot_graph(temps_dexec, title):
-    acc = np.zeros(len(temps_dexec))
-    efficacite = np.zeros(len(temps_dexec))
-    for i in range(len(temps_dexec)):
-        acc[i] = temps_dexec[0] / temps_dexec[i]
-        efficacite[i] = acc[i] / (i + 1)
-    acc *=100
+def plot_graph(running_times_per_prog, instance_name):
+
+    accelerations = dict()
+    efficiencies = dict()
+    for prog_name,times in running_times_per_prog.items():
+        fst_idx = 0 if times[0] != 0 else 1
+        accelerations[prog_name] = (
+            fst_idx,
+            [(times[fst_idx]/tps)*100 for tps in times[fst_idx:]]
+        )
+        efficiencies[prog_name] = (
+            fst_idx,
+            [(acc/(i+1))/100 for i,acc in enumerate(accelerations[prog_name][1])]
+        )
+
     # Graphe efficacité
     fig, axs = plt.subplots(2, 1, constrained_layout=True)
-    axs[0].plot(range(1, len(temps_dexec) + 1), acc, '-')
-    axs[0].set_title('Acceleration en fonction du nombre de processus')
+
+    for prog_name, acc in accelerations.items():
+        fst_idx, acceleration = acc
+        x_coords = range(fst_idx + 1, fst_idx + len(acceleration) + 1)
+        axs[0].plot(x_coords, acceleration, label=prog_name)
+
     axs[0].set_xlabel('Nb Proc')
     axs[0].set_ylabel('% Acceleration')
+    axs[0].set_title('Acceleration en fonction du nombre de processus')
+    axs[0].legend()
 
-    axs[1].plot(range(1, len(temps_dexec) + 1), efficacite, '-')
+
+    for prog_name, eff in efficiencies.items():
+        fst_idx, efficiency = eff
+        x_coords = range(fst_idx + 1, fst_idx + len(efficiency) + 1)
+        axs[1].plot(x_coords, efficiency, label=prog_name)
+
     axs[1].set_xlabel('Nb proc')
     axs[1].set_ylabel('Efficacite')
     axs[1].set_title('Efficacite en fonction du nombre de processus')
-    fig.suptitle(title)
+    axs[1].legend()
+    fig.suptitle(instance_name)
 
-    plt.savefig(title[:-2] + 'png')
+    plt.savefig(GRAPH_DIR + instance_name[:-2] + 'png')
 
 
 
@@ -46,6 +69,32 @@ if __name__ == '__main__':
           'pentomino_6_10.ec': ['16.9', '8.3', '6.2', '4.8', '4.3', '3.6', '3.9', '3.0', '3.3', '2.8', '2.7', '2.6', '3.1', '3.1', '2.2', '2.5'],
           'pento_plus_tetra_2x4x10.ec': ['1023.0', '524.7', '355.2', '423.0', '251.0', '207.3', '194.6', '285.4', '191.3', '154.0', '171.0', '196.5', '181.5', '125.2', '125.1', '154.2']}
 
-    for k, v in d2.items():
-        plot_graph([float(x) for x in v], k)
-    #exec_alternate_bell14()
+    if len(sys.argv) < 3:
+        print("Usage:", sys.argv[0], "nb_tests_per_instance results_file1 [results_file2 ...]")
+        exit(1)
+
+    os.mkdir(GRAPH_DIR)
+
+    tests_per_instance = int(sys.argv[1])
+    result_files = sys.argv[2:]
+
+    results_per_instance = dict()
+    for file in result_files:
+        with open(file, 'r') as f:
+            prog_results = dict()
+            for i,l in enumerate(f.readlines()):
+                if i % (tests_per_instance + 1) == 0:
+                    instance = l.strip()
+                    prog_results[instance] = list()
+                else:
+                    prog_results[instance].append(float(l.strip()))
+
+            filename = os.path.basename(f.name)
+            for instance, times in prog_results.items():
+                if results_per_instance.get(instance) is None:
+                    results_per_instance[instance] = dict()
+                results_per_instance[instance][filename[:-len('.txt')]] = times
+
+
+    for instance, times_per_prog in results_per_instance.items():
+        plot_graph(times_per_prog, instance)

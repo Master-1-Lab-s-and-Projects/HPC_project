@@ -57,3 +57,7 @@ compile_commands.json
 
 # build
 build/
+
+# results
+*.png
+testing/graphs/
