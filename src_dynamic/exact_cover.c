@@ -26,6 +26,8 @@
 
 #define WAS_CHOSEN 1
 #define DISTRIBUTION_LEVEL_THRESHOLD 1
+#define STATE_REQ_TIMEOUT 0.5
+#define DISTRIB_REQ_TIMEOUT 0.5
 
 const int MPI_TAG_STATUS_QUERY = 0;     // tag pour la demande d'état du context d'un proc (MPI)
 const int MPI_TAG_DISTRIB_QUERY = 1;    // tag pour la demande de distribution du travail d'un proc (MPI)
@@ -399,8 +401,7 @@ void request_workers_status(int free_worker, int nb_items)
     DPRINTF("Master: waiting for workers to send state\n");
     int idx_count = 0;
     double curr_time = wtime();
-    // TODO: add a define for the TIMEOUT
-    while (wtime() - curr_time < 1 && idx_count == 0) {
+    while (wtime() - curr_time < STATE_REQ_TIMEOUT && idx_count == 0) {
         MPI_Testsome(nb_reqs, state_reqs, &idx_count,
                 cmpl_state_reqs_indices, MPI_STATUSES_IGNORE);
     }
@@ -464,7 +465,7 @@ void request_work_distribution(const struct instance_t *instance,
 
     double curr_time = wtime();
     int completed = 0;
-    while (wtime() - curr_time < 2 && !completed) {
+    while (wtime() - curr_time < DISTRIB_REQ_TIMEOUT && !completed) {
         MPI_Test(&request, &completed, MPI_STATUS_IGNORE);
     }
     if (completed)
