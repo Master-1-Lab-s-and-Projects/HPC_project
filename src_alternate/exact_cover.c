@@ -614,13 +614,13 @@ void solve(const struct instance_t *instance, struct context_t *ctx)
                 ctx->solutions, ctx->nodes, rank);
         if (rank == 0) {
             for (int i = 1; i < nb_proc; i++) {
-                int rcvd_solutions;
-                MPI_Recv(&rcvd_solutions, 1, MPI_INTEGER, i, tag, MPI_COMM_WORLD, NULL);
+                long long int rcvd_solutions;
+                MPI_Recv(&rcvd_solutions, 1, MPI_LONG_LONG_INT, i, tag, MPI_COMM_WORLD, NULL);
                 // receive nb_solution for proc of rank i
                 ctx->solutions += rcvd_solutions;
             }
         } else {
-            MPI_Send(&ctx->solutions, 1, MPI_INTEGER, 0, tag, MPI_COMM_WORLD);
+            MPI_Send(&ctx->solutions, 1, MPI_LONG_LONG_INT, 0, tag, MPI_COMM_WORLD);
         }
     }
 
