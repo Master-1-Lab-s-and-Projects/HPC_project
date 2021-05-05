@@ -401,7 +401,7 @@ void request_workers_status(int free_worker, int nb_items)
     DPRINTF("Master: waiting for workers to send state\n");
     int idx_count = 0;
     double curr_time = wtime();
-    while (wtime() - curr_time < STATE_REQ_TIMEOUT && idx_count == 0) {
+    while (wtime() - curr_time < STATE_REQ_TIMEOUT && idx_count <= (nb_proc - 2)/2) {
         MPI_Testsome(nb_reqs, state_reqs, &idx_count,
                 cmpl_state_reqs_indices, MPI_STATUSES_IGNORE);
     }

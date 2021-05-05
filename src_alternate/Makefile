@@ -4,7 +4,7 @@ CFLAGS = -Wall -O3
 
 .PHONY: clean all default cleanall
 
-BUILD_DIR=../build_alternate
+BUILD_DIR=../build/build_alternate
 
 SRC = exact_cover.c 
 OBJ_DEPS = $(SRC:.c=.o)

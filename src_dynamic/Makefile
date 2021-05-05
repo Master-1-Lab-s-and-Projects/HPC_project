@@ -4,7 +4,7 @@ CFLAGS = -Wall -O3
 
 .PHONY: clean all default cleanall
 
-BUILD_DIR=../build_dynamic
+BUILD_DIR=../build/build_dynamic
 
 SRC = main.c datastructure.c exact_cover.c utility.c matrix_parser.c
 OBJ_DEPS = $(SRC:.c=.o)
