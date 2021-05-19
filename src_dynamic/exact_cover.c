@@ -247,11 +247,10 @@ int get_distribution_lvl(int *child_num, int* upper_bound, int lvl_limit)
 
 void distribute_work(const struct instance_t *instance, struct context_t *ctx)
 {
-    int distrib_lvl = get_distribution_lvl( ctx->child_num, ctx->upper_bounds, instance->n_items);
+    int distrib_lvl = get_distribution_lvl(ctx->child_num, ctx->upper_bounds, instance->n_items);
 
     if (distrib_lvl > DISTRIBUTION_LEVEL_THRESHOLD) {
-        DPRINTF("Proc [%d]: === WILL NOT DISTRIBUTE ANYMORE (%d > %d) ===\n",
-                rank, distrib_lvl, DISTRIBUTION_LEVEL_THRESHOLD);
+        DPRINTF("Proc [%d]: === WILL NOT DISTRIBUTE ANYMORE (%d > %d) ===\n", rank, distrib_lvl, DISTRIBUTION_LEVEL_THRESHOLD);
         distrib_lvl = -1;
         stop_distribution = true;
 
@@ -262,15 +261,12 @@ void distribute_work(const struct instance_t *instance, struct context_t *ctx)
         memcpy(distribution_chosen_options, ctx->chosen_options,
                 distrib_lvl * sizeof(*ctx->chosen_options));
 
-        DPRINTF("Proc [%d]: child_num[%d] = %d\n",
-                rank, distrib_lvl, ctx->child_num[distrib_lvl]);
+        DPRINTF("Proc [%d]: child_num[%d] = %d\n", rank, distrib_lvl, ctx->child_num[distrib_lvl]);
     }
 
     distribution_level = distrib_lvl;
 
-    DPRINTF("Proc [%d]: distributing level %d from child %d. New upper_bound: %d\n",
-            rank, distrib_lvl, distribution_lower_bound,
-            (distrib_lvl == -1) ? -1 : ctx->upper_bounds[distrib_lvl]);
+    DPRINTF("Proc [%d]: distributing level %d from child %d. New upper_bound: %d\n", rank, distrib_lvl, distribution_lower_bound, (distrib_lvl == -1) ? -1 : ctx->upper_bounds[distrib_lvl]);
 
     MPI_Send(distribution_buffer, 2 + instance->n_items, MPI_INTEGER, 0,
             MPI_TAG_DISTRIB_QUERY, MPI_COMM_WORLD);
@@ -299,17 +295,17 @@ void solve(const struct instance_t * const instance,
         return;                         /* succès : plus d'objet actif */
     }
 
-
     int chosen_item = choose_next_item(ctx);
     int chosen_item_before = chosen_item;
     struct sparse_array_t *active_options = ctx->active_options[chosen_item];
     if (sparse_array_empty(active_options))
         return;           /* échec : impossible de couvrir chosen_item */
+    cover(instance, ctx, chosen_item);
     //if (ctx->level == 0)
     //    DPRINTF("Proc [%d]: lvl[%d], chosen item = %d\n",
     //            rank, ctx->level, chosen_item);
 
-    cover(instance, ctx, chosen_item);
+
     ctx->num_children[ctx->level] = active_options->len;
     ctx->lower_bounds[ctx->level] = ((lower_bound == -1) ? 0 : lower_bound);
     ctx->upper_bounds[ctx->level] = active_options->len;
@@ -351,11 +347,8 @@ void solve(const struct instance_t * const instance,
     }
 
     //if (ctx->level == 0) {
-    //    DPRINTF("Proc [%d]: l_bound = %d && u_bound = %d\n",
-    //            rank, ctx->lower_bounds[ctx->level], ctx->upper_bounds[ctx->level]);
+    //    DPRINTF("Proc [%d]: l_bound = %d && u_bound = %d\n", rank, ctx->lower_bounds[ctx->level], ctx->upper_bounds[ctx->level]);
     //}
-
-    //Typiquement on rajoute une boucle ici pour les proc 1 ... n-1 et on les fait tourner a l'infini, on les arrete avec un signal depuis le programme principal
 
     uncover(instance, ctx, chosen_item);                      /* backtrack */
     assert(choose_next_item(ctx) == chosen_item_before);
@@ -411,7 +404,7 @@ void request_workers_status(int free_worker, int nb_items)
 
 int choose_proc_to_distribute(int free_worker, int nb_items)
 {
-    int highest_not_completed_lvl = nb_items - 1;
+    int highest_lvl_not_completed = nb_items - 1;
     int proc_to_distribute = -1;
     int max_children_to_explore = 0;
     for (int i=1; i < nb_proc; i++) {
@@ -423,13 +416,13 @@ int choose_proc_to_distribute(int free_worker, int nb_items)
         int *upper_bound = &procs_status[i][1 + nb_items];
 
         int lvl = get_distribution_lvl(child_num, upper_bound,
-                min(proc_current_lvl, highest_not_completed_lvl));
+                min(proc_current_lvl, highest_lvl_not_completed));
 
         int children_to_explore = upper_bound[lvl] - child_num[lvl] - 1;
-        if (lvl <= highest_not_completed_lvl
+        if (lvl <= highest_lvl_not_completed
                 && children_to_explore >= max_children_to_explore) {
 
-            highest_not_completed_lvl = lvl;
+            highest_lvl_not_completed = lvl;
             proc_to_distribute = i;
             max_children_to_explore = children_to_explore;
         }

@@ -1,6 +1,6 @@
 TARGET = exact_cover.exe
 CC = mpicc
-CFLAGS = -Wall -O3
+CFLAGS = -Wall -O0 -g -DDEBUG
 
 BUILD_DIR=../build/build_$(subst src_,,$(notdir $(shell pwd)))
 
