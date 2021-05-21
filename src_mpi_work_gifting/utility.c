@@ -22,11 +22,19 @@ void print_option(const struct instance_t *instance, int option)
     printf("\n");
 }
 
-void print_sparse_array(struct sparse_array_t *arr)
+void print_sparse_array(const struct sparse_array_t *arr)
 {
     printf("[");
     for (int i=0; i < arr->len; i++)
         printf("%d%s", arr->p[i], (i == arr->len - 1)? "]\n": ", ");
+}
+
+void print_array_of_active_options(const struct context_t *ctx)
+{
+    printf("[");
+    for (int i=0; i < ctx->active_items->len; i++)
+        printf("%p%s", ctx->active_options[ctx->active_items->p[i]],
+                (i == ctx->active_items->len - 1)? "]\n": ", ");
 }
 
 void print_context(const struct context_t *ctx)
@@ -44,13 +52,13 @@ void print_context(const struct context_t *ctx)
     printf("\n");
 }
 
-void print_work_order(int *work_order)
+void print_work_order(const int *work_order)
 {
     int distrib_lvl = work_order[0];
-    DPRINTF("Proc [%d]: New work order starts at level %d [", rank, distrib_lvl);
+    DPRINTF("Work order starts at level %d [", distrib_lvl);
     for (int i = 0; i <= distrib_lvl; i++)
         DPRINTF("%d%s", work_order[i+2], (i == distrib_lvl) ? "" : ", ");
-    DPRINTF(" - %d]\n", work_order[1]);
+    DPRINTF(" ... %d]\n", work_order[1]);
 }
 
 void progress_report(const struct context_t *ctx)

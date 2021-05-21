@@ -10,7 +10,7 @@
 #include <mpi.h>
 
 #define INCR_WORK_ORDERS_CAPACITY 2 * nb_proc
-const long long WORK_SHARE_DELTA = 5e6; // partage son travail tous les ... noeuds
+const long long WORK_SHARE_DELTA = 1e6; // partage son travail tous les ... noeuds
 const int MAX_LEVEL_SHARED = 50;
 
 
@@ -144,7 +144,7 @@ void reactivate(const struct instance_t *instance, struct context_t *ctx,
  * Meaning, the process is currently exploring the last configuration
  * of options for all the levels above.
  */
-int get_distribution_lvl(int *child_num, int* num_children, int lvl_limit)
+int get_distribution_lvl(const int *child_num, const int* num_children, int lvl_limit)
 {
     int distrib_lvl = 0; // the highest level not completed
 
@@ -190,8 +190,10 @@ void share_work(struct context_t *ctx, int *work_order_buffer, int work_order_si
             rank, distrib_lvl,
             ctx->child_num[distrib_lvl], ctx->num_children[distrib_lvl],
             ctx->child_num[distrib_lvl], first_child_shared);
+    assert(ctx->child_num[distrib_lvl] < first_child_shared
+            && first_child_shared < last_child_shared);
 
-    memcpy(work_order_buffer + 2, ctx->child_num, (distrib_lvl + 1) * sizeof(*ctx->child_num));
+    memcpy(&work_order_buffer[2], ctx->child_num, (distrib_lvl) * sizeof(*ctx->child_num));
     work_order_buffer[0] = distrib_lvl;
     work_order_buffer[1] = last_child_shared;
     work_order_buffer[2 + distrib_lvl] = first_child_shared;
@@ -215,6 +217,13 @@ void solve(const struct instance_t *instance, struct context_t *ctx,
     }
     int chosen_item = choose_next_item(ctx);
     struct sparse_array_t *active_options = ctx->active_options[chosen_item];
+    if (active_options == (void *) 0x71)
+        printf("Proc [%d]: lvl (%d), child_num (%d), distrib_lvl (%d)\n",
+                rank, ctx->level, ctx->child_num[ctx->level], distrib_lvl);
+    if (active_options != NULL && ((long long) active_options) < 1000000) {
+        printf("Rank [%d]: active options %p\n", rank, active_options);
+        assert(false);
+    }
     if (sparse_array_empty(active_options))
         return;           /* échec : impossible de couvrir chosen_item */
     cover(instance, ctx, chosen_item);
@@ -252,7 +261,7 @@ int ** allocate_work_orders(int **work_orders, int *work_orders_capacity,
         err(1, "impossible d'allouer le tableau des ordres de travail");
 
     for (int i = old_capacity; i < new_capacity; i++) {
-        work_orders[i] = malloc(work_order_size * sizeof(work_orders[i]));
+        work_orders[i] = malloc(work_order_size * sizeof(*work_orders[i]));
         if (work_orders[i] == NULL)
             err(1, "impossible d'allouer un ordre de travail");
     }
@@ -281,6 +290,8 @@ void launch_worker(const struct instance_t *instance, struct context_t *ctx,
     if (work_order == NULL)
         err(1, "impossible d'allouer le buffer de distribution");
 
+    double idle_time = 0.0;
+
     work_order[0] = 0;          // distribution level
     work_order[1] = -1;         // last child at distrib_lvl (-1 means not defined)
     work_order[2] = rank - 1;   // first child at level 0
@@ -290,22 +301,30 @@ void launch_worker(const struct instance_t *instance, struct context_t *ctx,
 
         // By default the first branch explored at each level is the first one
         memset(ctx->first_child, 0, instance->n_items * sizeof(*ctx->first_child));
-        memcpy(ctx->first_child, work_order + 2, (distrib_lvl + 1) * sizeof(*work_order));
+        memcpy(ctx->first_child, work_order + 2, (distrib_lvl + 1) * sizeof(*ctx->first_child));
+        assert(distrib_lvl + 1 <= instance->n_items);
 
-        print_work_order(work_order);
+        DPRINTF("Proc [%d]: ", rank), print_work_order(work_order);
+        printf("Proc [%d]: first_child [", rank);
+        for (int i = 0; i < instance->n_items; i++)
+            printf("%d%s", ctx->first_child[i], (i == instance->n_items - 1) ? "" : ", ");
+        printf("]\n");
         solve(instance, ctx, work_order, work_order_size, nb_proc - 1,
                 distrib_lvl, last_child_at_distrib_lvl);
 
         work_order[0] = -1;
-        work_order[1] = ctx->solutions >> 32;
-        work_order[2] = 0xFFFFFFFF & ctx->solutions;
+        double start_idle = wtime();
         MPI_Send(work_order, work_order_size, MPI_INTEGER, 0, 0, MPI_COMM_WORLD);
         MPI_Recv(work_order, work_order_size, MPI_INTEGER, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        if (work_order[0] != -1)
+            idle_time += wtime() - start_idle;
     } while(work_order[0] != -1);
 
+    printf("Proc [%d]: idle_time = %.3fs\n", rank, idle_time);
+    free(work_order);
 }
 
-int launch_master(int work_order_size)
+void launch_master(int work_order_size)
 {
     int nb_free_workers = 0;
     int *free_workers = malloc((nb_proc - 1) * sizeof(*free_workers));
@@ -315,24 +334,27 @@ int launch_master(int work_order_size)
     int work_orders_capacity = 0;
     int nb_work_orders = 0;
     int **work_orders = NULL;
-    long long total_solutions = 0;
+
+    double idle_time = 0.0;
 
     while (nb_free_workers < nb_proc - 1) {
         if (nb_work_orders >= work_orders_capacity)
-            work_orders = allocate_work_orders(work_orders,
-                    &work_orders_capacity, work_order_size);
+            work_orders = allocate_work_orders(work_orders, &work_orders_capacity, work_order_size);
 
+        double start_idle = wtime();
         //int new_work_order = nb_work_orders;
         /* Wait for work AND for done procs */
         int proc_src = wait_for_work(work_orders[nb_work_orders], work_order_size);
+        idle_time += wtime() - start_idle;
         if (work_orders[nb_work_orders][0] == -1) {
             free_workers[nb_free_workers++] = proc_src;
-            long long solutions = work_orders[nb_work_orders][1];
-            solutions <<= 32;
-            solutions |= work_orders[nb_work_orders][2];
-            total_solutions += solutions;
             DPRINTF("Master: proc [%d] is free\n", proc_src);
         } else {
+            //if (nb_work_orders > 0) {
+            //    int *last_work_order = work_orders[0];
+            //    work_orders[0] = work_orders[nb_work_orders];
+            //    work_orders[nb_work_orders] = last_work_order;
+            //}
             nb_work_orders++;
             DPRINTF("Master: new work order from proc [%d] (total = %d)\n",
                     proc_src, nb_work_orders);
@@ -346,6 +368,9 @@ int launch_master(int work_order_size)
                     work_order_size);
             DPRINTF("Master: sent work to proc [%d]\n", free_workers[nb_free_workers]);
         }
+        for (int i = 0; i < nb_work_orders; i++) {
+            DPRINTF("Master: (%d) ", i), print_work_order(work_orders[i]);
+        }
     }
 
     /* Announce to procs the work is done */
@@ -353,8 +378,12 @@ int launch_master(int work_order_size)
     MPI_Request req;
     for (int proc = 1; proc < nb_proc; proc++)
         MPI_Isend(work_orders[0], work_order_size, MPI_INTEGER, proc, 0, MPI_COMM_WORLD, &req);
-    DPRINTF("Master: Total solutions %lld\n", total_solutions);
-    return total_solutions;
+    printf("Master: idle_time = %.3fs\n", idle_time);
+
+    for (int i = 0; i < work_orders_capacity; i++)
+        free(work_orders[i]);
+    free(work_orders);
+    free(free_workers);
 }
 
 void launch_parallel(const struct instance_t *instance, struct context_t *ctx)
@@ -367,14 +396,14 @@ void launch_parallel(const struct instance_t *instance, struct context_t *ctx)
     int work_order_size = 2 + instance->n_items;
     int root = 0;
     if (rank == root)
-        ctx->solutions = launch_master(work_order_size);
+        launch_master(work_order_size);
     else
         launch_worker(instance, ctx, work_order_size);
 
-    //long long int total_solutions = 0;
-    //MPI_Reduce(&ctx->solutions, &total_solutions, 1, MPI_LONG_LONG_INT, MPI_SUM,
-    //        root, MPI_COMM_WORLD);
-    //ctx->solutions = total_solutions;
+    long long int total_solutions = 0;
+    MPI_Reduce(&ctx->solutions, &total_solutions, 1, MPI_LONG_LONG_INT, MPI_SUM,
+            root, MPI_COMM_WORLD);
+    ctx->solutions = total_solutions;
 }
 
 struct context_t * backtracking_setup(const struct instance_t *instance)
@@ -385,7 +414,7 @@ struct context_t * backtracking_setup(const struct instance_t *instance)
     ctx->level = 0;
     ctx->nodes = 0;
     ctx->solutions = 0;
-    ctx->next_work_share = 0;
+    ctx->next_work_share = WORK_SHARE_DELTA;
     int n = instance->n_items;
     int m = instance->n_options;
     ctx->active_options = malloc(n * sizeof(*ctx->active_options));
