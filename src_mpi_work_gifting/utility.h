@@ -25,5 +25,7 @@ void print_option(const struct instance_t *instance, int option);
 void print_sparse_array(struct sparse_array_t *arr);
 void print_context(const struct context_t *ctx);
 
+void print_work_order(int *work_order);
+
 void progress_report(const struct context_t *ctx);
 #endif

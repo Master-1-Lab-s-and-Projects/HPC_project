@@ -28,6 +28,7 @@ struct context_t {
     int *first_child;                         // numéro du premier fils à explorer
     int level;                                // nombre d'options choisies
     long long nodes;                          // nombre de noeuds explorés
+    long long next_work_share;                // 'date' du prochain partage de travail
     long long solutions;                      // nombre de solutions trouvées
 };
 

@@ -44,6 +44,15 @@ void print_context(const struct context_t *ctx)
     printf("\n");
 }
 
+void print_work_order(int *work_order)
+{
+    int distrib_lvl = work_order[0];
+    DPRINTF("Proc [%d]: New work order starts at level %d [", rank, distrib_lvl);
+    for (int i = 0; i <= distrib_lvl; i++)
+        DPRINTF("%d%s", work_order[i+2], (i == distrib_lvl) ? "" : ", ");
+    DPRINTF(" - %d]\n", work_order[1]);
+}
+
 void progress_report(const struct context_t *ctx)
 {
     double now = wtime();
