@@ -9,8 +9,8 @@
 
 #include <mpi.h>
 
-#define INITIAL_NB_WORK_ORDERS 2 * nb_proc
-const long long WORK_SHARE_DELTA = 1e7; // partage son travail tous les ... noeuds
+#define INCR_WORK_ORDERS_CAPACITY 2 * nb_proc
+const long long WORK_SHARE_DELTA = 5e6; // partage son travail tous les ... noeuds
 const int MAX_LEVEL_SHARED = 50;
 
 
@@ -242,19 +242,22 @@ void solve(const struct instance_t *instance, struct context_t *ctx,
     uncover(instance, ctx, chosen_item);                      /* backtrack */
 }
 
-int ** allocate_work_orders(int **work_orders, int old_size, int new_size,
+int ** allocate_work_orders(int **work_orders, int *work_orders_capacity,
         int work_order_size)
 {
-    assert(old_size < new_size);
-    work_orders = realloc(work_orders, new_size * sizeof(*work_orders));
+    int old_capacity = *work_orders_capacity;
+    int new_capacity = old_capacity + INCR_WORK_ORDERS_CAPACITY;
+    work_orders = realloc(work_orders, new_capacity * sizeof(*work_orders));
     if (work_orders == NULL)
         err(1, "impossible d'allouer le tableau des ordres de travail");
 
-    for (int i = old_size; i < new_size; i++) {
+    for (int i = old_capacity; i < new_capacity; i++) {
         work_orders[i] = malloc(work_order_size * sizeof(work_orders[i]));
         if (work_orders[i] == NULL)
             err(1, "impossible d'allouer un ordre de travail");
     }
+
+    *work_orders_capacity = new_capacity;
     return work_orders;
 }
 
@@ -294,48 +297,52 @@ void launch_worker(const struct instance_t *instance, struct context_t *ctx,
                 distrib_lvl, last_child_at_distrib_lvl);
 
         work_order[0] = -1;
+        work_order[1] = ctx->solutions >> 32;
+        work_order[2] = 0xFFFFFFFF & ctx->solutions;
         MPI_Send(work_order, work_order_size, MPI_INTEGER, 0, 0, MPI_COMM_WORLD);
         MPI_Recv(work_order, work_order_size, MPI_INTEGER, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
     } while(work_order[0] != -1);
 
 }
 
-void launch_master(int work_order_size)
+int launch_master(int work_order_size)
 {
     int nb_free_workers = 0;
     int *free_workers = malloc((nb_proc - 1) * sizeof(*free_workers));
     if (free_workers == NULL)
         err(1, "impossible d'allouer le tableau des travailleurs libres");
 
+    int work_orders_capacity = 0;
     int nb_work_orders = 0;
-    int last_work_order = -1;
     int **work_orders = NULL;
+    long long total_solutions = 0;
 
     while (nb_free_workers < nb_proc - 1) {
-        if (last_work_order + 1 >= nb_work_orders) {
-            int new_nb_work_orders = nb_work_orders + INITIAL_NB_WORK_ORDERS;
-            work_orders = allocate_work_orders(work_orders, nb_work_orders,
-                    new_nb_work_orders, work_order_size);
-            nb_work_orders = new_nb_work_orders;
-        }
+        if (nb_work_orders >= work_orders_capacity)
+            work_orders = allocate_work_orders(work_orders,
+                    &work_orders_capacity, work_order_size);
 
-        int new_work_order = last_work_order + 1;
+        //int new_work_order = nb_work_orders;
         /* Wait for work AND for done procs */
-        int proc_src = wait_for_work(work_orders[new_work_order], work_order_size);
-        if (work_orders[new_work_order][0] == -1) {
+        int proc_src = wait_for_work(work_orders[nb_work_orders], work_order_size);
+        if (work_orders[nb_work_orders][0] == -1) {
             free_workers[nb_free_workers++] = proc_src;
+            long long solutions = work_orders[nb_work_orders][1];
+            solutions <<= 32;
+            solutions |= work_orders[nb_work_orders][2];
+            total_solutions += solutions;
             DPRINTF("Master: proc [%d] is free\n", proc_src);
         } else {
-            last_work_order = new_work_order;
+            nb_work_orders++;
             DPRINTF("Master: new work order from proc [%d] (total = %d)\n",
-                    proc_src, last_work_order + 1);
+                    proc_src, nb_work_orders);
         }
 
         /* Send remaining work to free workers */
-        if (nb_free_workers > 0 && last_work_order >= 0) {
+        if (nb_free_workers > 0 && nb_work_orders > 0) {
             send_work_to_proc(
                     free_workers[--nb_free_workers],
-                    work_orders[last_work_order--],
+                    work_orders[--nb_work_orders],
                     work_order_size);
             DPRINTF("Master: sent work to proc [%d]\n", free_workers[nb_free_workers]);
         }
@@ -346,6 +353,8 @@ void launch_master(int work_order_size)
     MPI_Request req;
     for (int proc = 1; proc < nb_proc; proc++)
         MPI_Isend(work_orders[0], work_order_size, MPI_INTEGER, proc, 0, MPI_COMM_WORLD, &req);
+    DPRINTF("Master: Total solutions %lld\n", total_solutions);
+    return total_solutions;
 }
 
 void launch_parallel(const struct instance_t *instance, struct context_t *ctx)
@@ -357,16 +366,15 @@ void launch_parallel(const struct instance_t *instance, struct context_t *ctx)
      */
     int work_order_size = 2 + instance->n_items;
     int root = 0;
-    if (rank == root) {
-        launch_master(work_order_size);
-    } else {
+    if (rank == root)
+        ctx->solutions = launch_master(work_order_size);
+    else
         launch_worker(instance, ctx, work_order_size);
-    }
 
-    long long int total_solutions = 0;
-    MPI_Reduce(&ctx->solutions, &total_solutions, 1, MPI_LONG_LONG_INT, MPI_SUM,
-            root, MPI_COMM_WORLD);
-    ctx->solutions = total_solutions;
+    //long long int total_solutions = 0;
+    //MPI_Reduce(&ctx->solutions, &total_solutions, 1, MPI_LONG_LONG_INT, MPI_SUM,
+    //        root, MPI_COMM_WORLD);
+    //ctx->solutions = total_solutions;
 }
 
 struct context_t * backtracking_setup(const struct instance_t *instance)

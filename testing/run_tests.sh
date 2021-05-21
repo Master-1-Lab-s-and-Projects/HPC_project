@@ -1,13 +1,10 @@
 #!/bin/sh
 
-echo "$#"
 if [ $# -ne 2 ]
 then
     printf "Usage: %s program result_file\n" "${0##*/}"
     exit
 fi
-
-exit
 
 PROGRAM="$1"
 RESULTS="$2"
@@ -19,6 +16,6 @@ do
 	for i in $(seq 1 16)
 	do
 		#echo "$i"
-		mpirun -N $i "$PROGRAM" --in  "Instances/$f" --progress-report 0 >> $RESULTS
+		mpirun -N $i "$PROGRAM" --in  "Instances/$f" --progress-report 0 | sed 's/FINI.*en \(.*\)s/\1/' >> $RESULTS
 	done
 done
