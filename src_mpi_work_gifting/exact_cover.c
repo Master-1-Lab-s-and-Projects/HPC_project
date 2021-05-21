@@ -217,9 +217,14 @@ void solve(const struct instance_t *instance, struct context_t *ctx,
     }
     int chosen_item = choose_next_item(ctx);
     struct sparse_array_t *active_options = ctx->active_options[chosen_item];
-    if (active_options == (void *) 0x71)
+    if (active_options == (void *) 0x71) {
         printf("Proc [%d]: lvl (%d), child_num (%d), distrib_lvl (%d)\n",
                 rank, ctx->level, ctx->child_num[ctx->level], distrib_lvl);
+        printf("Proc [%d]: active_options [", rank);
+        for (int i = 0; i < instance->n_items; i++)
+            printf("%p%s", ctx->active_options[i],
+                    (i == instance->n_items - 1) ? "]\n" : ", ");
+    }
     if (active_options != NULL && ((long long) active_options) < 1000000) {
         printf("Rank [%d]: active options %p\n", rank, active_options);
         assert(false);
