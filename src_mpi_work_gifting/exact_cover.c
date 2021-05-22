@@ -42,6 +42,14 @@ void choose_option(const struct instance_t *instance, struct context_t *ctx,
         int item = instance->options[p];
         if (item == chosen_item)
             continue;
+        if (!sparse_array_membership(ctx->active_items, item)) {
+            printf("Proc [%d]: [choose_option] chosen_item (%d), level (%d)\n",
+                    rank, item, ctx->level);
+            printf("Proc [%d]: child_num [", rank);
+            for (int i = 0; i < instance->n_items; i++)
+                printf("%d%s", ctx->child_num[i], (i == instance->n_items - 1) ? "]\n" : ", ");
+            assert(0);
+        }
         cover(instance, ctx, item);
     }
 }
@@ -91,8 +99,10 @@ void deactivate(const struct instance_t *instance, struct context_t *ctx,
 
 void cover(const struct instance_t *instance, struct context_t *ctx, int item)
 {
-    if (item_is_primary(instance, item))
+    if (item_is_primary(instance, item)) {
         sparse_array_remove(ctx->active_items, item);
+        assert(ctx->active_items->len >= 0);
+    }
     struct sparse_array_t *active_options = ctx->active_options[item];
     for (int i = 0; i < active_options->len; i++) {
         int option = active_options->p[i];
@@ -108,7 +118,9 @@ void deactivate(const struct instance_t *instance, struct context_t *ctx,
         int item = instance->options[k];
         if (item == covered_item)
             continue;
+        assert(sparse_array_membership(ctx->active_options[item], option));
         sparse_array_remove(ctx->active_options[item], option);
+        assert(ctx->active_options[item]->len >= 0);
     }
 }
 
@@ -216,10 +228,13 @@ void solve(const struct instance_t *instance, struct context_t *ctx,
         return;                         /* succès : plus d'objet actif */
     }
     int chosen_item = choose_next_item(ctx);
+    if (ctx->level == 0)
+        printf("Proc [%d]: chosen_item (%d)\n", rank, chosen_item);
+
     struct sparse_array_t *active_options = ctx->active_options[chosen_item];
     if (active_options == (void *) 0x71) {
-        printf("Proc [%d]: lvl (%d), child_num (%d), distrib_lvl (%d)\n",
-                rank, ctx->level, ctx->child_num[ctx->level], distrib_lvl);
+        printf("Proc [%d]: lvl (%d), child_num (%d), distrib_lvl (%d), chosen_item (%d), active_items->len (%d)\n",
+                rank, ctx->level, ctx->child_num[ctx->level], distrib_lvl, chosen_item, ctx->active_items->len);
         printf("Proc [%d]: active_options [", rank);
         for (int i = 0; i < instance->n_items; i++)
             printf("%p%s", ctx->active_options[i],
@@ -231,6 +246,10 @@ void solve(const struct instance_t *instance, struct context_t *ctx,
     }
     if (sparse_array_empty(active_options))
         return;           /* échec : impossible de couvrir chosen_item */
+    if (!sparse_array_membership(ctx->active_items, chosen_item)) {
+        printf("Proc [%d]: chosen_item (%d)\n", rank, chosen_item);
+        assert(0);
+    }
     cover(instance, ctx, chosen_item);
 
     if (ctx->level == distrib_lvl && distrib_num_children != -1)
@@ -251,7 +270,8 @@ void solve(const struct instance_t *instance, struct context_t *ctx,
         unchoose_option(instance, ctx, option, chosen_item);
     }
     /* Reset the first child to be explored for the current level.  */
-    ctx->first_child[ctx->level] = 0;
+    // Is most likely useless
+    //ctx->first_child[ctx->level] = 0;
 
     uncover(instance, ctx, chosen_item);                      /* backtrack */
 }
@@ -312,8 +332,7 @@ void launch_worker(const struct instance_t *instance, struct context_t *ctx,
         DPRINTF("Proc [%d]: ", rank), print_work_order(work_order);
         printf("Proc [%d]: first_child [", rank);
         for (int i = 0; i < instance->n_items; i++)
-            printf("%d%s", ctx->first_child[i], (i == instance->n_items - 1) ? "" : ", ");
-        printf("]\n");
+            printf("%d%s", ctx->first_child[i], (i == instance->n_items - 1) ? "]\n" : ", ");
         solve(instance, ctx, work_order, work_order_size, nb_proc - 1,
                 distrib_lvl, last_child_at_distrib_lvl);
 
