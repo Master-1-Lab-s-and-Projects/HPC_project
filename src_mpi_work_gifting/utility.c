@@ -39,7 +39,7 @@ void print_array_of_active_options(const struct context_t *ctx)
 
 void print_context(const struct context_t *ctx)
 {
-    printf("Context: \n");
+    printf("Proc[%d] Context: \n", rank);
     printf("* active_items: ");
     print_sparse_array(ctx->active_items);
 

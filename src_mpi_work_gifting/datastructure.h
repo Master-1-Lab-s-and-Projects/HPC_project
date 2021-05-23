@@ -23,9 +23,9 @@ struct context_t {
     struct sparse_array_t *active_items;      // objets actifs
     struct sparse_array_t **active_options;   // options actives contenant l'objet i
     int *chosen_options;                      // options choisies à ce stade
+    int *chosen_items;                        // items choisis à ce stade
     int *child_num;                           // numéro du fils exploré
     int *num_children;                        // nombre de fils à explorer
-    int *first_child;                         // numéro du premier fils à explorer
     int level;                                // nombre d'options choisies
     long long nodes;                          // nombre de noeuds explorés
     long long next_work_share;                // 'date' du prochain partage de travail
