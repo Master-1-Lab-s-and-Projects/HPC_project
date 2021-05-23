@@ -55,10 +55,11 @@ void print_context(const struct context_t *ctx)
 void print_work_order(const int *work_order)
 {
     int distrib_lvl = work_order[0];
-    DPRINTF("Work order starts at level %d [", distrib_lvl);
-    for (int i = 0; i <= distrib_lvl; i++)
-        DPRINTF("%d%s", work_order[i+2], (i == distrib_lvl) ? "" : ", ");
-    DPRINTF(" ... %d]\n", work_order[1]);
+    DPRINTF("Work order starts at level %d (%d ... %d) [",
+            distrib_lvl, work_order[1], work_order[2]);
+    for (int i = 0; i < distrib_lvl; i++)
+        DPRINTF("%d%s", work_order[3 + i], (i == distrib_lvl - 1) ? "" : ", ");
+    DPRINTF("]\n");
 }
 
 void progress_report(const struct context_t *ctx)

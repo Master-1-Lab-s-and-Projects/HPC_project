@@ -10,8 +10,8 @@
 #include <mpi.h>
 
 #define INCR_WORK_ORDERS_CAPACITY 2 * nb_proc
-const long long WORK_SHARE_DELTA = 1e6; // partage son travail tous les ... noeuds
-const int MAX_LEVEL_SHARED = 50;
+const long long WORK_SHARE_DELTA = 1e5; // partage son travail tous les ... noeuds
+const int MAX_LEVEL_SHARED = 1;
 
 
 void solution_found(const struct instance_t *instance, struct context_t *ctx)
@@ -34,13 +34,13 @@ void solution_found(const struct instance_t *instance, struct context_t *ctx)
 void cover(const struct instance_t *instance, struct context_t *ctx, int item);
 
 void choose_option(const struct instance_t *instance, struct context_t *ctx,
-        int option, int chosen_item)
+        int option, int chosen_item, bool was_chosen)
 {
     ctx->chosen_options[ctx->level] = option;
     ctx->level++;
     for (int p = instance->ptr[option]; p < instance->ptr[option + 1]; p++) {
         int item = instance->options[p];
-        if (item == chosen_item)
+        if (item == chosen_item && was_chosen)
             continue;
         cover(instance, ctx, item);
     }
@@ -49,11 +49,11 @@ void choose_option(const struct instance_t *instance, struct context_t *ctx,
 void uncover(const struct instance_t *instance, struct context_t *ctx, int item);
 
 void unchoose_option(const struct instance_t *instance, struct context_t *ctx,
-        int option, int chosen_item)
+        int option, int chosen_item, bool was_chosen)
 {
     for (int p = instance->ptr[option + 1] - 1; p >= instance->ptr[option]; p--) {
         int item = instance->options[p];
-        if (item == chosen_item)
+        if (item == chosen_item && was_chosen)
             continue;
         uncover(instance, ctx, item);
     }
@@ -186,26 +186,29 @@ void share_work(struct context_t *ctx, int *work_order_buffer, int work_order_si
 
     int first_child_shared = get_first_child_to_share(ctx, distrib_lvl);
     int last_child_shared = ctx->num_children[distrib_lvl];
-    DPRINTF("Proc [%d]: at level %d, [%d, ..., %d[ --> [%d, ..., %d[\n",
-            rank, distrib_lvl,
-            ctx->child_num[distrib_lvl], ctx->num_children[distrib_lvl],
-            ctx->child_num[distrib_lvl], first_child_shared);
     assert(ctx->child_num[distrib_lvl] < first_child_shared
             && first_child_shared < last_child_shared);
 
-    memcpy(&work_order_buffer[2], ctx->child_num, (distrib_lvl) * sizeof(*ctx->child_num));
+    memcpy(&work_order_buffer[3], ctx->chosen_options, (distrib_lvl) * sizeof(*ctx->chosen_options));
     work_order_buffer[0] = distrib_lvl;
-    work_order_buffer[1] = last_child_shared;
-    work_order_buffer[2 + distrib_lvl] = first_child_shared;
+    work_order_buffer[1] = first_child_shared;
+    work_order_buffer[2] = last_child_shared;
     MPI_Send(work_order_buffer, work_order_size, MPI_INTEGER, 0, 0, MPI_COMM_WORLD);
 
+
+    DPRINTF("Proc [%d]: at level %d [%d], [%d, ..., %d[ --> [%d, ..., %d[\n",
+            rank, distrib_lvl, (distrib_lvl == 1) ? ctx->chosen_options[0] : -1,
+            ctx->child_num[distrib_lvl], ctx->num_children[distrib_lvl],
+            ctx->child_num[distrib_lvl], first_child_shared);
     ctx->num_children[distrib_lvl] = first_child_shared;
+
 }
 
 void solve(const struct instance_t *instance, struct context_t *ctx,
         int *work_order_buffer, int work_order_size, int loop_incr,
         int distrib_lvl, int distrib_num_children)
 {
+    assert(ctx->level >= distrib_lvl);
     ctx->nodes++;
     if (ctx->nodes == next_report)
         progress_report(ctx);
@@ -217,41 +220,37 @@ void solve(const struct instance_t *instance, struct context_t *ctx,
     }
     int chosen_item = choose_next_item(ctx);
     struct sparse_array_t *active_options = ctx->active_options[chosen_item];
-    if (active_options == (void *) 0x71) {
-        printf("Proc [%d]: lvl (%d), child_num (%d), distrib_lvl (%d)\n",
-                rank, ctx->level, ctx->child_num[ctx->level], distrib_lvl);
-        printf("Proc [%d]: active_options [", rank);
-        for (int i = 0; i < instance->n_items; i++)
-            printf("%p%s", ctx->active_options[i],
-                    (i == instance->n_items - 1) ? "]\n" : ", ");
-    }
-    if (active_options != NULL && ((long long) active_options) < 1000000) {
-        printf("Rank [%d]: active options %p\n", rank, active_options);
-        assert(false);
-    }
     if (sparse_array_empty(active_options))
         return;           /* échec : impossible de couvrir chosen_item */
+
+    if (ctx->level == -1) {
+        DPRINTF("Proc [%d]: co (%d) ci (%d), ", rank, ctx->chosen_options[0], chosen_item);
+        print_sparse_array(ctx->active_items);
+    }
     cover(instance, ctx, chosen_item);
 
-    if (ctx->level == distrib_lvl && distrib_num_children != -1)
-        ctx->num_children[ctx->level] = distrib_num_children;
-    else
-        ctx->num_children[ctx->level] = active_options->len;
+    ctx->num_children[ctx->level] = (distrib_num_children != -1)
+        ? distrib_num_children : active_options->len;
 
+    int old_opt = 0;
+    if (ctx->level == 1)
+        old_opt = ctx->chosen_options[0];
     for (int k = ctx->first_child[ctx->level]; k < ctx->num_children[ctx->level]; k += loop_incr) {
-        if (ctx->level == 0 && 0)
-            DPRINTF("#%d Proc [%d]\n", k, rank);
         int option = active_options->p[k];
         ctx->child_num[ctx->level] = k;
-        choose_option(instance, ctx, option, chosen_item);
-        solve(instance, ctx, work_order_buffer, work_order_size, 1,
-                distrib_lvl, distrib_num_children);
+        choose_option(instance, ctx, option, chosen_item, true);
+        solve(instance, ctx, work_order_buffer, work_order_size, 1, distrib_lvl, -1);
+
         if (ctx->solutions >= max_solutions)
             return;
-        unchoose_option(instance, ctx, option, chosen_item);
+        unchoose_option(instance, ctx, option, chosen_item, true);
     }
-    /* Reset the first child to be explored for the current level.  */
-    ctx->first_child[ctx->level] = 0;
+    if (ctx->level == -1) {
+        DPRINTF("%d, %d ... %d (Proc [%d])\n",
+                ctx->chosen_options[0],
+                ctx->first_child[1], ctx->num_children[1], rank);
+        assert(old_opt == ctx->chosen_options[0]);
+    }
 
     uncover(instance, ctx, chosen_item);                      /* backtrack */
 }
@@ -288,6 +287,35 @@ void send_work_to_proc(int worker, int *work_order, int work_order_size)
     MPI_Send(work_order, work_order_size, MPI_INTEGER, worker, 0, MPI_COMM_WORLD);
 }
 
+void build_context(const struct instance_t *instance,
+        struct context_t *ctx, const int *chosen_options, int n_options)
+{
+    for (int i = 0; i < n_options; i++)
+        choose_option(instance, ctx, chosen_options[i], -1, false);
+}
+
+void reset_context(const struct instance_t *instance,
+        struct context_t *ctx, const int *chosen_options, int n_options)
+{
+    for (int i = n_options - 1; i >= 0; i--)
+        unchoose_option(instance, ctx, chosen_options[i], -1, false);
+}
+
+void new_sparse_array(const struct sparse_array_t *src, struct sparse_array_t *dst)
+{
+    dst->capacity = src->capacity;
+    dst->p = malloc(dst->capacity * sizeof(*dst->p));
+    dst->q = malloc(dst->capacity * sizeof(*dst->q));
+}
+
+void copy_sparse_array(const struct sparse_array_t *src, struct sparse_array_t *dst)
+{
+    assert(dst->capacity == src->capacity);
+    dst->len = src->len;
+    memcpy(dst->p, src->p, dst->capacity * sizeof(*dst->p));
+    memcpy(dst->q, src->q, dst->capacity * sizeof(*dst->q));
+}
+
 void launch_worker(const struct instance_t *instance, struct context_t *ctx,
         int work_order_size)
 {
@@ -297,25 +325,44 @@ void launch_worker(const struct instance_t *instance, struct context_t *ctx,
 
     double idle_time = 0.0;
 
+    int n = instance->n_items;
+    struct sparse_array_t active_items_sav = {0};
+    new_sparse_array(ctx->active_items, &active_items_sav);
+    copy_sparse_array(ctx->active_items, &active_items_sav);
+
+    struct sparse_array_t *active_options_sav = malloc(n * sizeof(*ctx->active_options));
+    for (int i = 0; i < n; i++) {
+        new_sparse_array(ctx->active_options[0], &active_options_sav[0]);
+        copy_sparse_array(ctx->active_options[0], &active_options_sav[0]);
+    }
+
+
+
     work_order[0] = 0;          // distribution level
-    work_order[1] = -1;         // last child at distrib_lvl (-1 means not defined)
-    work_order[2] = rank - 1;   // first child at level 0
+    work_order[1] = rank - 1;   // first child at distrib_lvl
+    work_order[2] = -1;         // last child at distrib_lvl (-1 means default)
     do {
         int distrib_lvl = work_order[0];
-        int last_child_at_distrib_lvl = work_order[1];
+        int first_child_at_d_lvl = work_order[1];
+        int last_child_at_d_lvl = work_order[2];
 
         // By default the first branch explored at each level is the first one
         memset(ctx->first_child, 0, instance->n_items * sizeof(*ctx->first_child));
-        memcpy(ctx->first_child, work_order + 2, (distrib_lvl + 1) * sizeof(*ctx->first_child));
-        assert(distrib_lvl + 1 <= instance->n_items);
+        ctx->first_child[distrib_lvl] = first_child_at_d_lvl;
 
-        DPRINTF("Proc [%d]: ", rank), print_work_order(work_order);
-        printf("Proc [%d]: first_child [", rank);
-        for (int i = 0; i < instance->n_items; i++)
-            printf("%d%s", ctx->first_child[i], (i == instance->n_items - 1) ? "" : ", ");
-        printf("]\n");
-        solve(instance, ctx, work_order, work_order_size, nb_proc - 1,
-                distrib_lvl, last_child_at_distrib_lvl);
+        memcpy(ctx->chosen_options, &work_order[3], distrib_lvl * sizeof(ctx->chosen_options));
+
+        int loop_incr = (distrib_lvl == 0) ? (nb_proc - 1) : 1;
+
+        build_context(instance, ctx, ctx->chosen_options, distrib_lvl);
+        solve(instance, ctx, work_order, work_order_size, loop_incr,
+                distrib_lvl, last_child_at_d_lvl);
+        reset_context(instance, ctx, ctx->chosen_options, distrib_lvl);
+
+        copy_sparse_array(&active_items_sav, ctx->active_items);
+        for (int i = 0; i < n; i++)
+            copy_sparse_array(&active_options_sav[0], ctx->active_options[0]);
+        ctx->level = 0;
 
         work_order[0] = -1;
         double start_idle = wtime();
@@ -353,7 +400,7 @@ void launch_master(int work_order_size)
         idle_time += wtime() - start_idle;
         if (work_orders[nb_work_orders][0] == -1) {
             free_workers[nb_free_workers++] = proc_src;
-            DPRINTF("Master: proc [%d] is free\n", proc_src);
+            //DPRINTF("Master: proc [%d] is free\n", proc_src);
         } else {
             //if (nb_work_orders > 0) {
             //    int *last_work_order = work_orders[0];
@@ -361,8 +408,9 @@ void launch_master(int work_order_size)
             //    work_orders[nb_work_orders] = last_work_order;
             //}
             nb_work_orders++;
-            DPRINTF("Master: new work order from proc [%d] (total = %d)\n",
-                    proc_src, nb_work_orders);
+            //DPRINTF("Master: new work order from proc [%d] (total = %d): ",
+            //        proc_src, nb_work_orders);
+            //print_work_order(work_orders[nb_work_orders - 1]);
         }
 
         /* Send remaining work to free workers */
@@ -371,11 +419,13 @@ void launch_master(int work_order_size)
                     free_workers[--nb_free_workers],
                     work_orders[--nb_work_orders],
                     work_order_size);
-            DPRINTF("Master: sent work to proc [%d]\n", free_workers[nb_free_workers]);
+            //DPRINTF("Master: sent work to proc [%d] (total = %d)\n",
+            //        free_workers[nb_free_workers], nb_work_orders);
         }
-        for (int i = 0; i < nb_work_orders; i++) {
-            DPRINTF("Master: (%d) ", i), print_work_order(work_orders[i]);
-        }
+        //for (int i = 0; i < nb_work_orders; i++) {
+        //    DPRINTF("Master: (%d) ", i);
+        //    print_work_order(work_orders[i]);
+        //}
     }
 
     /* Announce to procs the work is done */
@@ -395,10 +445,11 @@ void launch_parallel(const struct instance_t *instance, struct context_t *ctx)
 {
     /**
      * A work_order contains:
-     * [distrib_level, num_children, child_num[0], ..., child_num[distrib_level]]
-     * - num_children: number of children at the distrib_level
+     * [distrib_lvl, first_child, last_child, option[0], ..., child_num[distrib_lvl]]
+     * - first_child: first child to visit at distrib_lvl
+     * - last_child: last child (excluded) to visit at distrib_lvl
      */
-    int work_order_size = 2 + instance->n_items;
+    int work_order_size = 3 + instance->n_items;
     int root = 0;
     if (rank == root)
         launch_master(work_order_size);
