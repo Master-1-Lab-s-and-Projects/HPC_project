@@ -1,6 +1,6 @@
 TARGET = exact_cover.exe
 CC = mpicc
-CFLAGS = -Wall -lm -O0 -g -DDEBUG
+CFLAGS = -Wall -lm
 
 BUILD_DIR=../build/build_$(subst src_,,$(notdir $(shell pwd)))
 
@@ -13,9 +13,13 @@ BEAR_CMD = bear -a
 endif
 
 
-default: $(TARGET)
+debug: CFLAGS += -DDEBUG -g -O0
+debug: all
 
-all: default
+optimized: CFLAGS += -O3
+optimized: all
+
+all: $(TARGET)
 
 $(TARGET): $(OBJ)
 	$(CC) $(CFLAGS) -o $@ $(OBJ)
