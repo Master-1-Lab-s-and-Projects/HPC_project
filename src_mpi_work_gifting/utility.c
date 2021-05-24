@@ -37,6 +37,13 @@ void print_array_of_active_options(const struct context_t *ctx)
                 (i == ctx->active_items->len - 1)? "]\n": ", ");
 }
 
+void print_array(const int *arr, int a, int b)
+{
+    DPRINTF("[");
+    for (int i = a; i < b; i++)
+        DPRINTF("%d%s", arr[i], (i == b - 1) ? "]\n" : ", ");
+}
+
 void print_context(const struct context_t *ctx)
 {
     printf("Proc[%d] Context: \n", rank);

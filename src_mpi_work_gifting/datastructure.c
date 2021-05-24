@@ -60,7 +60,6 @@ void sparse_array_remove(struct sparse_array_t *S, int x)
 
 void sparse_array_unremove(struct sparse_array_t *S)
 {
-//#pragma omp atomic
     S->len++;
 }
 

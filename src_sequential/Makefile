@@ -1,6 +1,6 @@
 TARGET = exact_cover.exe
 CC = mpicc
-CFLAGS = -Wall -O3
+CFLAGS = -Wall -DDEBUG#-O3
 
 .PHONY: clean all default cleanall
 

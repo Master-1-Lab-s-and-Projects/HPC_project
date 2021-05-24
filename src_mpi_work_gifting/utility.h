@@ -24,6 +24,7 @@ double wtime();
 void print_option(const struct instance_t *instance, int option);
 void print_sparse_array(const struct sparse_array_t *arr);
 void print_array_of_active_options(const struct context_t *ctx);
+void print_array(const int *arr, int a, int b);
 void print_context(const struct context_t *ctx);
 
 void print_work_order(const int *work_order);
