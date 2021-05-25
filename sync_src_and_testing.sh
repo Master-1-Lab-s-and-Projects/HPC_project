@@ -1,3 +1,14 @@
 #!/bin/bash
-rsync -vr src_* nancy.g5k:hpc/
-rsync -v testing/* nancy.g5k:hpc/testing/
+
+sync_src_and_testing() {
+    rsync -vr src_* testing "$1.g5k:hpc/"
+}
+
+sites=(nancy)
+if [ $# -gt 0 ]; then
+    sites=$@
+fi
+
+for site in $sites; do
+    sync_results "$site"
+done
