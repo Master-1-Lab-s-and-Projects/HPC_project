@@ -1,12 +1,10 @@
 TARGET = exact_cover.exe
-CC = mpicc
-CFLAGS = -Wall -fopenmp -O0 -g
+CC = gcc
+CFLAGS = -Wall -lm -fopenmp
 
-.PHONY: clean all default cleanall
+BUILD_DIR=../build/build_$(subst src_,,$(notdir $(shell pwd)))
 
-BUILD_DIR=../build/build_omp
-
-SRC = exact_cover.c 
+SRC = main.c datastructure.c exact_cover.c utility.c matrix_parser.c
 OBJ_DEPS = $(SRC:.c=.o)
 OBJ = $(patsubst %,$(BUILD_DIR)/%,$(OBJ_DEPS))
 
@@ -14,9 +12,14 @@ ifneq (, $(shell which bear 2>/dev/null))
 BEAR_CMD = bear -a
 endif
 
-default: $(TARGET)
 
-all: default
+debug: CFLAGS += -DDEBUG -g -O0
+debug: all
+
+optimized: CFLAGS += -O3
+optimized: all
+
+all: $(TARGET)
 
 $(TARGET): $(OBJ)
 	$(CC) $(CFLAGS) -o $@ $(OBJ)
@@ -30,3 +33,5 @@ clean:
 
 cleanall: clean
 	-rm -f $(TARGET)
+
+.PHONY: clean all default cleanall
