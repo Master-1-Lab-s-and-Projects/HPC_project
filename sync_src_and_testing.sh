@@ -10,5 +10,5 @@ if [ $# -gt 0 ]; then
 fi
 
 for site in $sites; do
-    sync_results "$site"
+    sync_src_and_testing "$site"
 done
