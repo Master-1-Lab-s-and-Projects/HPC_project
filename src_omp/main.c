@@ -95,7 +95,7 @@ int main(int argc, char **argv)
 
     start = wtime();
     launch_parallel(instance, ctx);
-    printf("FINI. Trouvé %lld solutions en %.1fs\n", ctx->solutions,
+    printf("FINI. Trouvé %lld solutions en %.3fs\n", ctx->solutions,
             wtime() - start);
 
     free_instance(&instance);
