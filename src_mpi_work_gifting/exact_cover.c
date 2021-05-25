@@ -419,8 +419,8 @@ void launch_worker(const struct instance_t *instance, struct context_t *ctx,
             idle_time += wtime() - start_idle;
 
     } while(work_order[0] != -1);
-    printf("Proc [%d]: solutions (%lld), nb_work_orders_handled (%d)\n", rank, ctx->solutions, nb_work_orders_handled);
-    printf("Proc [%d]: idle_time = %.3fs\n", rank, idle_time); free(work_order);
+    DPRINTF("Proc [%d]: solutions (%lld), nb_work_orders_handled (%d)\n", rank, ctx->solutions, nb_work_orders_handled);
+    DPRINTF("Proc [%d]: idle_time = %.3fs\n", rank, idle_time); free(work_order);
 }
 
 void swap_work_orders(int **work_order_a, int **work_order_b)
@@ -493,7 +493,7 @@ void launch_master(int work_order_size)
     MPI_Request req;
     for (int proc = 1; proc < nb_proc; proc++)
         MPI_Isend(work_orders[0], work_order_size, MPI_INTEGER, proc, 0, MPI_COMM_WORLD, &req);
-    printf("Master: idle_time = %.3fs, Max work orders at the same time = %d, Deepest lvl shrd = %d\n",
+    DPRINTF("Master: idle_time = %.3fs, Max work orders at the same time = %d, Deepest lvl shrd = %d\n",
             idle_time, max_work_orders, deepest_level_shrd);
 
     free(free_workers);

@@ -495,8 +495,9 @@ struct instance_t * load_matrix(const char *filename)
 
 
     fclose(in);
-    fprintf(stderr, "Lu %d objets (%d principaux) et %d options\n",
-            instance->n_items, instance->n_primary, instance->n_options);
+    if (rank == 0)
+        fprintf(stderr, "Lu %d objets (%d principaux) et %d options\n",
+                instance->n_items, instance->n_primary, instance->n_options);
     return instance;
 }
 
@@ -571,19 +572,8 @@ void solve(const struct instance_t *instance, struct context_t *ctx)
 
     // Distribute first level
     if (ctx->level == 0) {
-        if (rank == 0) {
-            //printf("Nb of active options: %d\n", active_options->len);
-        }
-        //int packet_size = active_options->len / nb_proc;
-        //l_bound = rank * packet_size;
-        //if (rank != nb_proc - 1)
-        //    u_bound = l_bound + packet_size;
-
         l_bound = rank;
         u_bound = active_options->len;
-
-        //printf("l:%d, u:%d, rank:%d\n",
-        //        l_bound, u_bound, rank);
     }
 
     for (int k = l_bound; k < u_bound;) {
@@ -606,22 +596,6 @@ void solve(const struct instance_t *instance, struct context_t *ctx)
 
         // On ne distribue qu'au premier niveau
         k += (ctx->level == 0) ? nb_proc : 1;
-    }
-
-    // Collect results
-    if (ctx->level == 0) {
-        printf("Found %lld solutions - %lld nodes - proc of rank %d\n",
-                ctx->solutions, ctx->nodes, rank);
-        if (rank == 0) {
-            for (int i = 1; i < nb_proc; i++) {
-                long long int rcvd_solutions;
-                MPI_Recv(&rcvd_solutions, 1, MPI_LONG_LONG_INT, i, tag, MPI_COMM_WORLD, NULL);
-                // receive nb_solution for proc of rank i
-                ctx->solutions += rcvd_solutions;
-            }
-        } else {
-            MPI_Send(&ctx->solutions, 1, MPI_LONG_LONG_INT, 0, tag, MPI_COMM_WORLD);
-        }
     }
 
     //Typiquement on rajoute une boucle ici pour les proc 1 ... n-1 et on les fait tourner a l'infini, on les arrete avec un signal depuis le programme principal
@@ -661,25 +635,23 @@ int main(int argc, char **argv)
         usage(argv);
     next_report = report_delta;
 
+    MPI_Init(NULL, NULL);
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &nb_proc);
 
     struct instance_t * instance = load_matrix(in_filename);
     struct context_t * ctx = backtracking_setup(instance);
     start = wtime();
 
-    MPI_Init(NULL, NULL);
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    MPI_Comm_size(MPI_COMM_WORLD, &nb_proc);
+    solve(instance, ctx);
+    long long solutions = 0;
+    MPI_Reduce(&ctx->solutions, &solutions, 1, MPI_LONG_LONG_INT, MPI_SUM,
+            0, MPI_COMM_WORLD);
+    ctx->solutions = solutions;
 
     if (rank == 0)
-        printf("nb_proc: %d\n", nb_proc);
-
-    solve(instance, ctx);
-
-
-    if (rank == 0) {
         printf("FINI. Trouvé %lld solutions en %.1fs\n", ctx->solutions,
                 wtime() - start);
-    }
     MPI_Finalize();
     exit(EXIT_SUCCESS);
 }

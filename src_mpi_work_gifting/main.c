@@ -94,7 +94,8 @@ int main(int argc, char **argv)
     }
 
     start = wtime();
-    launch_parallel(instance, ctx);
+    if (nb_proc > 1)
+        launch_parallel(instance, ctx);
     if (rank == 0)
         printf("FINI. Trouvé %lld solutions en %.1fs\n", ctx->solutions,
                 wtime() - start);
