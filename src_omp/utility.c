@@ -22,41 +22,54 @@ void print_option(const struct instance_t *instance, int option)
     printf("\n");
 }
 
+void print_array(const int *arr, int a, int b)
+{
+    DPRINTF("[");
+    for (int i = a; i < b; i++)
+        DPRINTF("%d%s", arr[i], (i == b - 1) ? "" : ", ");
+    DPRINTF("]\n");
+}
+
 void print_sparse_array(const struct sparse_array_t *arr)
 {
-    printf("[");
-    for (int i=0; i < arr->len; i++)
-        printf("%d%s", arr->p[i], (i == arr->len - 1)? "]\n": ", ");
+    DPRINTF("%d/%d, <%p>, <%p> ", arr->len, arr->capacity, arr->p, arr->q);
+    print_array(arr->p, 0, arr->len);
 }
 
 void print_array_of_active_options(const struct context_t *ctx)
 {
     printf("[");
-    for (int i=0; i < ctx->active_items->len; i++)
-        printf("%p%s", ctx->active_options[ctx->active_items->p[i]],
-                (i == ctx->active_items->len - 1)? "]\n": ", ");
+    int *active_items = ctx->active_items->p;
+    for (int i = 0; i < ctx->active_items->len; i++)
+        printf("%p%s", ctx->active_options[active_items[i]],
+                (i == ctx->active_items->len - 1)? "": ", ");
+    printf("]\n");
 }
 
-void print_array(const int *arr, int a, int b)
-{
-    DPRINTF("[");
-    for (int i = a; i < b; i++)
-        DPRINTF("%d%s", arr[i], (i == b - 1) ? "]\n" : ", ");
-}
 
 void print_context(const struct context_t *ctx)
 {
-    printf("Context: \n");
-    printf("* active_items: ");
+    printf("Context: <%p>\n", ctx);
+    printf("  * active_items: <%p> ", ctx->active_items);
     print_sparse_array(ctx->active_items);
+    printf("  * chosen_options: <%p> ", ctx->chosen_options);
+    print_array(ctx->chosen_options, 0, ctx->level);
+    printf("  * child_num: <%p> ", ctx->child_num);
+    print_array(ctx->child_num, 0, ctx->level);
+    printf("  * num_children: <%p> ", ctx->num_children);
+    print_array(ctx->num_children, 0, ctx->level);
+    printf("  * level: %d\n", ctx->level);
+    printf("  * nodes: %lld\n", ctx->nodes);
+    printf("  * solutions: %lld\n", ctx->solutions);
 
-    printf("* active_options: \n");
-    for (int i=0; i < ctx->active_items->len; i++) {
-        int item = ctx->active_items->p[i];
-        printf("\t%d, ", item);
-        print_sparse_array(ctx->active_options[item]);
-    }
-    printf("\n");
+
+    //printf("* active_options: \n");
+    //for (int i=0; i < ctx->active_items->len; i++) {
+    //    int item = ctx->active_items->p[i];
+    //    printf("\t%d, ", item);
+    //    print_sparse_array(ctx->active_options[item]);
+    //}
+    //printf("\n");
 }
 
 void print_work_order(const int *work_order)

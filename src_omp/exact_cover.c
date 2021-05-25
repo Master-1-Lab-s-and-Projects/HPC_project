@@ -7,6 +7,8 @@
 #include <assert.h>
 #include <math.h>
 
+#include <omp.h>
+
 void solution_found(const struct instance_t *instance, struct context_t *ctx)
 {
     ctx->solutions++;
@@ -134,6 +136,8 @@ void reactivate(const struct instance_t *instance, struct context_t *ctx,
 
 void solve(const struct instance_t *instance, struct context_t *ctx)
 {
+    //printf("Current level = %d, ctx = %p\n", ctx->level, ctx);
+    //print_context(ctx);
     ctx->nodes++;
     if (ctx->nodes == next_report)
         progress_report(ctx);
@@ -147,21 +151,46 @@ void solve(const struct instance_t *instance, struct context_t *ctx)
         return;           /* échec : impossible de couvrir chosen_item */
     cover(instance, ctx, chosen_item);
     ctx->num_children[ctx->level] = active_options->len;
+
     for (int k = 0; k < active_options->len; k++) {
         int option = active_options->p[k];
         ctx->child_num[ctx->level] = k;
         choose_option(instance, ctx, option, chosen_item);
-        solve(instance, ctx);
+        if (ctx->level == 2) {
+            struct context_t *new_cpy = new_copy_context(ctx);
+            //printf(">> k = %d, new_cpy = %p\n", k, new_cpy);
+            #pragma omp task firstprivate(new_cpy,k)
+            {
+                struct context_t *cpy = new_cpy;
+                //printf("++ In task k = %d, cpy = %p\n", k, cpy);
+                cpy->solutions = 0;
+                solve(instance, cpy);
+                #pragma omp atomic
+                ctx->solutions += cpy->solutions;
+                free_context(&cpy);
+                //printf("-- Out task k = %d, cpy = %p\n", k, cpy);
+            }
+            //printf("<< k = %d\n", k);
+            new_cpy = NULL;
+        } else {
+            solve(instance, ctx);
+        }
         if (ctx->solutions >= max_solutions)
             return;
         unchoose_option(instance, ctx, option, chosen_item);
     }
+    #pragma omp taskwait
     uncover(instance, ctx, chosen_item);                      /* backtrack */
 }
 
 void launch_parallel(const struct instance_t *instance, struct context_t *ctx)
 {
-    solve(instance, ctx);
+    #pragma omp parallel
+    #pragma omp single
+    {
+        DPRINTF("Running with %d threads\n", omp_get_num_threads());
+        solve(instance, ctx);
+    }
 }
 
 struct context_t * backtracking_setup(const struct instance_t *instance)

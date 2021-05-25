@@ -70,7 +70,17 @@ int main(int argc, char **argv)
 
     struct instance_t * instance = load_matrix(in_filename);
     struct context_t * ctx = backtracking_setup(instance);
-    start = wtime();
+
+
+
+
+
+
+
+
+
+
+
 
     if (debug_mode) {
         int ifl = 0;
@@ -87,6 +97,9 @@ int main(int argc, char **argv)
     launch_parallel(instance, ctx);
     printf("FINI. Trouvé %lld solutions en %.1fs\n", ctx->solutions,
             wtime() - start);
+
+    free_instance(&instance);
+    free_context(&ctx);
 
     exit(EXIT_SUCCESS);
 }

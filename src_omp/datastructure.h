@@ -50,4 +50,7 @@ void sparse_array_remove(struct sparse_array_t *S, int x);
 void sparse_array_unremove(struct sparse_array_t *S);
 void sparse_array_unadd(struct sparse_array_t *S);
 
+struct context_t * new_copy_context(const struct context_t *ctx);
+void free_context(struct context_t **ctx);
+void free_instance(struct instance_t **instance);
 #endif
