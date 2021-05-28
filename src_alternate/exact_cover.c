@@ -603,6 +603,126 @@ void solve(const struct instance_t *instance, struct context_t *ctx)
     uncover(instance, ctx, chosen_item);                      /* backtrack */
 }
 
+struct instance_t * load_instance(const char *filename)
+{
+    struct instance_t *instance = NULL;
+    if (rank == 0) {
+        instance = load_matrix(in_filename);
+    } else {
+        instance = malloc(sizeof(*instance));
+        if (instance == NULL)
+            err(1, "Impossible d'allouer l'instance");
+    }
+    MPI_Bcast(&instance->n_items, 1, MPI_INTEGER, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&instance->n_primary, 1, MPI_INTEGER, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&instance->n_options, 1, MPI_INTEGER, 0, MPI_COMM_WORLD);
+    int n = instance->n_items;
+    int m = instance->n_options;
+
+    if (rank != 0) {
+        instance->item_name = malloc(n * sizeof(*instance->item_name));
+        instance->options = malloc(n * m * sizeof(*instance->options));
+        instance->ptr = malloc((m + 1) * sizeof(*instance->ptr));
+
+        if (instance->item_name == NULL || instance->options == NULL
+                || instance->ptr == NULL)
+            err(1, "Impossible d'allouer l'instance");
+    }
+    int *item_name_lens = malloc(n * sizeof(*item_name_lens));
+    if (item_name_lens == NULL)
+        err(1, "Impossible d'allouer l'instance");
+    if (rank == 0) {
+        for (int i = 0; i < n; i++) {
+            char *item_name = instance->item_name[i];
+            item_name_lens[i] = (item_name == NULL) ? 0 : strlen(item_name) + 1;
+        }
+    }
+
+    MPI_Bcast(item_name_lens, n, MPI_INTEGER, 0, MPI_COMM_WORLD);
+    MPI_Bcast(instance->options, n * m, MPI_INTEGER, 0, MPI_COMM_WORLD);
+    MPI_Bcast(instance->ptr, m + 1, MPI_INTEGER, 0, MPI_COMM_WORLD);
+
+    for (int i = 0; i < n; i++) {
+        int len = item_name_lens[i];
+        if (rank != 0) {
+            char *item_name = malloc(len * sizeof(*item_name));
+            if (item_name == NULL)
+                err(1, "Impossible d'allouer le nom d'objet");
+            instance->item_name[i] = item_name;
+        }
+        MPI_Bcast(instance->item_name[i], len, MPI_CHAR, 0, MPI_COMM_WORLD);
+    }
+
+    return instance;
+}
+
+struct instance_t * load_instance_async(const char *filename)
+{
+    struct instance_t *instance = NULL;
+    if (rank == 0) {
+        instance = load_matrix(in_filename);
+    } else {
+        instance = malloc(sizeof(*instance));
+        if (instance == NULL)
+            err(1, "Impossible d'allouer l'instance");
+    }
+    MPI_Request n_prim_req;
+    MPI_Ibcast(&instance->n_primary, 1, MPI_INTEGER, 0, MPI_COMM_WORLD, &n_prim_req);
+
+    MPI_Bcast(&instance->n_items, 1, MPI_INTEGER, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&instance->n_options, 1, MPI_INTEGER, 0, MPI_COMM_WORLD);
+    int n = instance->n_items;
+    int m = instance->n_options;
+
+    if (rank != 0) {
+        instance->item_name = malloc(n * sizeof(*instance->item_name));
+        instance->options = malloc(n * m * sizeof(*instance->options));
+        instance->ptr = malloc((m + 1) * sizeof(*instance->ptr));
+
+        if (instance->item_name == NULL || instance->options == NULL
+                || instance->ptr == NULL)
+            err(1, "Impossible d'allouer l'instance");
+    }
+    int *item_name_lens = malloc(n * sizeof(*item_name_lens));
+    if (item_name_lens == NULL)
+        err(1, "Impossible d'allouer l'instance");
+    if (rank == 0) {
+        for (int i = 0; i < n; i++) {
+            char *item_name = instance->item_name[i];
+            item_name_lens[i] = (item_name == NULL) ? 0 : strlen(item_name) + 1;
+        }
+    }
+
+    MPI_Request opt_req;
+    MPI_Request ptr_req;
+    MPI_Ibcast(instance->options, n * m, MPI_INTEGER, 0, MPI_COMM_WORLD, &opt_req);
+    MPI_Ibcast(instance->ptr, m + 1, MPI_INTEGER, 0, MPI_COMM_WORLD, &ptr_req);
+    MPI_Bcast(item_name_lens, n, MPI_INTEGER, 0, MPI_COMM_WORLD);
+
+    int nb_reqs = 3 + n;
+    MPI_Request *reqs = malloc(nb_reqs * sizeof(*reqs));
+    if (reqs == NULL)
+        err(1, "Impossible d'allouer les MPI_Request");
+
+    for (int i = 0; i < n; i++) {
+        int len = item_name_lens[i];
+        if (rank != 0) {
+            char *item_name = malloc(len * sizeof(*item_name));
+            if (item_name == NULL)
+                err(1, "Impossible d'allouer le nom d'objet");
+            instance->item_name[i] = item_name;
+        }
+        MPI_Request *req = &reqs[3 + i];
+        MPI_Ibcast(instance->item_name[i], len, MPI_CHAR, 0, MPI_COMM_WORLD, req);
+    }
+    reqs[0] = n_prim_req;
+    reqs[1] = opt_req;
+    reqs[2] = ptr_req;
+    MPI_Waitall(nb_reqs, reqs, MPI_STATUSES_IGNORE);
+
+    return instance;
+}
+
 int main(int argc, char **argv)
 {
     struct option longopts[5] = {
@@ -650,7 +770,7 @@ int main(int argc, char **argv)
     ctx->solutions = solutions;
 
     if (rank == 0)
-        printf("FINI. Trouvé %lld solutions en %.1fs\n", ctx->solutions,
+        printf("FINI. Trouvé %lld solutions en %.3fs\n", ctx->solutions,
                 wtime() - start);
     MPI_Finalize();
     exit(EXIT_SUCCESS);
