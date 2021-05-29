@@ -24,39 +24,42 @@ void print_option(const struct instance_t *instance, int option)
 
 void print_sparse_array(const struct sparse_array_t *arr)
 {
-    printf("[");
+    DPRINTF("[");
     for (int i=0; i < arr->len; i++)
-        printf("%d%s", arr->p[i], (i == arr->len - 1)? "]\n": ", ");
+        DPRINTF("%d%s", arr->p[i], (i == arr->len - 1)? "": ", ");
+    DPRINTF("]\n");
 }
 
 void print_array_of_active_options(const struct context_t *ctx)
 {
-    printf("[");
+    DPRINTF("[");
     for (int i=0; i < ctx->active_items->len; i++)
-        printf("%p%s", ctx->active_options[ctx->active_items->p[i]],
-                (i == ctx->active_items->len - 1)? "]\n": ", ");
+        DPRINTF("%p%s", ctx->active_options[ctx->active_items->p[i]],
+                (i == ctx->active_items->len - 1)? "": ", ");
+    DPRINTF("]\n");
 }
 
 void print_array(const int *arr, int a, int b)
 {
     DPRINTF("[");
     for (int i = a; i < b; i++)
-        DPRINTF("%d%s", arr[i], (i == b - 1) ? "]\n" : ", ");
+        DPRINTF("%d%s", arr[i], (i == b - 1) ? "" : ", ");
+    DPRINTF("]\n");
 }
 
 void print_context(const struct context_t *ctx)
 {
-    printf("Proc[%d] Context: \n", rank);
-    printf("* active_items: ");
+    DPRINTF("Proc[%d] Context: \n", rank);
+    DPRINTF("* active_items: ");
     print_sparse_array(ctx->active_items);
 
-    printf("* active_options: \n");
+    DPRINTF("* active_options: \n");
     for (int i=0; i < ctx->active_items->len; i++) {
         int item = ctx->active_items->p[i];
-        printf("\t%d, ", item);
+        DPRINTF("\t%d, ", item);
         print_sparse_array(ctx->active_options[item]);
     }
-    printf("\n");
+    DPRINTF("\n");
 }
 
 void print_work_order(const int *work_order)

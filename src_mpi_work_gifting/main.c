@@ -2,7 +2,7 @@
 #include <unistd.h>
 
 #include "datastructure.h"
-#include "matrix_parser.h"
+#include "load_instance.h"
 #include "utility.h"
 #include "exact_cover.h"
 
@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <getopt.h>
 #include <stdbool.h>
+#include <string.h>
 #include <err.h>
 
 #include <mpi.h>
@@ -32,20 +33,25 @@ void usage(char **argv)
     printf("--progress-report N   display a message every N nodes (0 to disable)\n");
     printf("--print-solutions     display solutions when they are found\n");
     printf("--stop-after N        stop the search once N solutions are found\n");
+    printf("--debugging           pauses the program and print the PID of the processes\n");
+    printf("--load-method {bcast,ibcast,parser}  how to load the instance (default:parser)\n");
     exit(0);
 }
 
 int main(int argc, char **argv)
 {
-    bool debug_mode = false;
-    struct option longopts[6] = {
+    struct option longopts[7] = {
         {"in", required_argument, NULL, 'i'},
         {"progress-report", required_argument, NULL, 'v'},
         {"print-solutions", no_argument, NULL, 'p'},
         {"stop-after", required_argument, NULL, 's'},
         {"debugging", no_argument, NULL, 'g'},
+        {"load-method", required_argument, NULL, 'l'},
         {NULL, 0, NULL, 0}
     };
+
+    bool debug_mode = false;
+    const char *load_method = NULL;
     char ch;
     while ((ch = getopt_long(argc, argv, "", longopts, NULL)) != -1) {
         switch (ch) {
@@ -64,6 +70,9 @@ int main(int argc, char **argv)
             case 'g':
                 debug_mode = true;
                 break;
+            case 'l':
+                load_method = optarg;
+                break;
             default:
                 errx(1, "Unknown option\n");
         }
@@ -72,14 +81,22 @@ int main(int argc, char **argv)
         usage(argv);
     next_report = report_delta;
 
-
-    struct instance_t * instance = load_matrix(in_filename);
-    struct context_t * ctx = backtracking_setup(instance);
-    start = wtime();
-
     MPI_Init(NULL, NULL);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &nb_proc);
+
+    struct instance_t * instance = NULL;
+    if (load_method == NULL || strcmp(load_method, "parser") == 0)
+        instance = load_matrix(in_filename);
+    else if (strcmp(load_method, "bcast") == 0)
+        instance = load_instance_bcast(in_filename);
+    else if (strcmp(load_method, "ibcast") == 0)
+        instance = load_instance_ibcast(in_filename);
+    else
+        errx(1, "loading method '%s' is invalid\n", load_method);
+    struct context_t * ctx = backtracking_setup(instance);
+    start = wtime();
+
 
 
     if (debug_mode) {
@@ -97,7 +114,7 @@ int main(int argc, char **argv)
     if (nb_proc > 1)
         launch_parallel(instance, ctx);
     if (rank == 0)
-        printf("FINI. Trouvé %lld solutions en %.1fs\n", ctx->solutions,
+        printf("FINI. Trouvé %lld solutions en %.3fs\n", ctx->solutions,
                 wtime() - start);
 
     MPI_Finalize();

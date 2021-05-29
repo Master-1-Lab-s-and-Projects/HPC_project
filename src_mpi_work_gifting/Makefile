@@ -4,7 +4,7 @@ CFLAGS = -Wall -lm
 
 BUILD_DIR=../build/build_$(subst src_,,$(notdir $(shell pwd)))
 
-SRC = main.c datastructure.c exact_cover.c utility.c matrix_parser.c
+SRC = main.c datastructure.c exact_cover.c utility.c load_instance.c
 OBJ_DEPS = $(SRC:.c=.o)
 OBJ = $(patsubst %,$(BUILD_DIR)/%,$(OBJ_DEPS))
 

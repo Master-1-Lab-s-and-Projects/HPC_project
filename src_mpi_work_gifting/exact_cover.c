@@ -8,15 +8,11 @@
 #include <math.h>
 
 #include <mpi.h>
-
-#define min(a,b) \
-    ({ __typeof__ (a) _a = (a); \
-     __typeof__ (b) _b = (b); \
-     _a < _b ? _a : _b; })
+#include <omp.h>
 
 #define INCR_WORK_ORDERS_CAPACITY 2 * nb_proc
 const long long WORK_SHARE_DELTA = 5e3; // partage son travail tous les ... noeuds
-const int MAX_NB_OPTIONS_SHARED = 100;
+const int MAX_NB_OPTIONS_SHARED = 500;
 int MAX_LEVEL_SHARED = 0;
 
 
@@ -180,7 +176,8 @@ int get_first_child_to_share(const struct context_t *ctx, int distrib_lvl)
         remaining_children = ceil(((double) remaining_children)/ 2.0);
         remaining_children *= nb_proc - 1;
     } else {
-        int children_to_share = min(remaining_children - 1, MAX_NB_OPTIONS_SHARED);
+        int half_remain = ceil(((double) remaining_children)/2.0);
+        int children_to_share = min(half_remain, MAX_NB_OPTIONS_SHARED);
         remaining_children -= children_to_share;
     }
 
@@ -216,21 +213,24 @@ void share_work(const struct instance_t *instance, struct context_t *ctx,
     memcpy(shr_chosen_options, ctx->chosen_options, (distrib_lvl) * sizeof(*shr_chosen_options));
     memcpy(shr_chosen_items, ctx->chosen_items, (distrib_lvl + 1) * sizeof(*shr_chosen_items));
 
+    DPRINTF("Proc [%02d]-1: SENT dlvl (%d)\n", rank, distrib_lvl);
+    DPRINTF("Proc [%02d]-2: SENT chosen_options ", rank);
+    print_array(ctx->chosen_options, 0, distrib_lvl);
+    DPRINTF("Proc [%02d]-3: SENT chosen_items ", rank);
+    print_array(ctx->chosen_items, 0, distrib_lvl + 1);
+
     if (distrib_lvl > 0) {
         int chosen_item_at_distrib_lvl = ctx->chosen_items[distrib_lvl];
         struct sparse_array_t *active_options = ctx->active_options[chosen_item_at_distrib_lvl];
         int *options_to_share = &active_options->p[first_child_shared];
         int nb_options_shared = last_child_shared - first_child_shared;
         memcpy(shr_active_options, options_to_share, nb_options_shared * sizeof(*shr_active_options));
-
-        DPRINTF("Proc [%d]-1: SENT dlvl (%d)\n", rank, distrib_lvl);
-        DPRINTF("Proc [%d]-2: SENT chosen_options ", rank);
-        print_array(ctx->chosen_options, 0, distrib_lvl);
-        DPRINTF("Proc [%d]-3: SENT chosen_items ", rank);
-        print_array(ctx->chosen_items, 0, distrib_lvl + 1);
-        DPRINTF("Proc [%d]-4: SENT shared_options ", rank);
+        DPRINTF("Proc [%02d]-4: SENT shared_options ", rank);
         print_array(options_to_share, 0, nb_options_shared);
     }
+
+    DPRINTF("Proc [%02d]-5: SENT ", rank);
+    print_work_order(work_order_buffer);
 
     MPI_Send(work_order_buffer, work_order_size, MPI_INTEGER, 0, 0, MPI_COMM_WORLD);
 
@@ -312,6 +312,8 @@ void build_context(const struct instance_t *instance, struct context_t *ctx,
         const int *chosen_items, const int *chosen_options, int distrib_lvl)
 {
     for (int i = 0; i < distrib_lvl; i++) {
+        ctx->child_num[i] = 0;
+        ctx->num_children[i] = 1;
         cover(instance, ctx, chosen_items[i]);
         choose_option(instance, ctx, chosen_options[i], chosen_items[i]);
     }
@@ -372,6 +374,7 @@ void launch_worker(const struct instance_t *instance, struct context_t *ctx,
         err(1, "impossible d'allouer le buffer de distribution");
 
     double idle_time = 0.0;
+    double build_time = 0.0;
     int nb_work_orders_handled = 0;
 
     int n = instance->n_items;
@@ -390,24 +393,23 @@ void launch_worker(const struct instance_t *instance, struct context_t *ctx,
         int loop_incr = (distrib_lvl == 0) ? (nb_proc - 1) : 1;
         int distrib_chosen_item = (distrib_lvl == 0) ? -1 : chosen_items[distrib_lvl];
 
-        if (distrib_lvl > 0) {
-            DPRINTF("Proc [%d]-1: RCVD dlvl (%d)\n", rank, distrib_lvl);
-            DPRINTF("Proc [%d]-2: RCVD chosen_options ", rank);
-            print_array(chosen_options, 0, distrib_lvl);
-            DPRINTF("Proc [%d]-3: RCVD chosen_items ", rank);
-            print_array(chosen_items, 0, distrib_lvl + 1);
-            DPRINTF("Proc [%d]-4: RCVD shared_options ", rank);
-            print_array(options_shared, 0, last_child_at_d_lvl - first_child_at_d_lvl);
-        }
+        DPRINTF("Proc [%02d]: RCVD ....... - ", rank);
+        print_work_order(work_order);
 
+        double start_build = wtime();
         build_context(instance, ctx, chosen_items, chosen_options, distrib_lvl);
         if (ctx->level > 0)
             reorder_active_options(ctx->active_options[distrib_chosen_item],
                     options_shared, first_child_at_d_lvl, last_child_at_d_lvl);
+        build_time += wtime() - start_build;
+
         solve(instance, ctx, work_order, work_order_size, loop_incr,
                 distrib_chosen_item, first_child_at_d_lvl, last_child_at_d_lvl);
-        reset_context(instance, ctx, ctx->chosen_items, ctx->chosen_options, distrib_lvl);
         nb_work_orders_handled++;
+
+        double start_reset = wtime();
+        reset_context(instance, ctx, ctx->chosen_items, ctx->chosen_options, distrib_lvl);
+        build_time += wtime() - start_reset;
 
         double start_idle = wtime();
 
@@ -415,12 +417,14 @@ void launch_worker(const struct instance_t *instance, struct context_t *ctx,
         MPI_Send(work_order, work_order_size, MPI_INTEGER, 0, 0, MPI_COMM_WORLD);
         MPI_Recv(work_order, work_order_size, MPI_INTEGER, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
+        // TODO: count waiting time when no more work
         if (work_order[0] != -1)
             idle_time += wtime() - start_idle;
 
     } while(work_order[0] != -1);
-    DPRINTF("Proc [%d]: solutions (%lld), nb_work_orders_handled (%d)\n", rank, ctx->solutions, nb_work_orders_handled);
-    DPRINTF("Proc [%d]: idle_time = %.3fs\n", rank, idle_time); free(work_order);
+            DPRINTF("Proc [%d]: solutions (%lld), nb_work_orders_handled (%d)\n", rank, ctx->solutions, nb_work_orders_handled);
+            DPRINTF("Proc [%d]: idle_time = %.3fs, build_time = %.3fs\n", rank, idle_time, build_time);
+            free(work_order);
 }
 
 void swap_work_orders(int **work_order_a, int **work_order_b)
@@ -462,27 +466,40 @@ void launch_master(int work_order_size)
         idle_time += wtime() - start_idle;
 
         if (work_orders[nb_work_orders][0] == -1) {
+            DPRINTF("Master: RCVD free proc n°%d\n", proc_src);
             free_workers[nb_free_workers++] = proc_src;
-            if (nb_free_workers > 0)
-                swap_free_workers(&free_workers[0], &free_workers[nb_free_workers - 1]);
+            //if (nb_free_workers > 0)
+            //    swap_free_workers(&free_workers[0], &free_workers[nb_free_workers - 1]);
         } else {
-            if (nb_work_orders > 0)
-                swap_work_orders(&work_orders[0], &work_orders[nb_work_orders]);
-            if (work_orders[0][0] > deepest_level_shrd)
-                deepest_level_shrd = work_orders[0][0];
             nb_work_orders++;
+            DPRINTF("Master: RCVD work order from proc n°%d: ", proc_src);
+            print_work_order(work_orders[nb_work_orders - 1]);
+            //if (nb_work_orders > 1)
+            //    swap_work_orders(&work_orders[0], &work_orders[nb_work_orders - 1]);
+            if (work_orders[nb_work_orders - 1][0] > deepest_level_shrd)
+                deepest_level_shrd = work_orders[nb_work_orders - 1][0];
             if (nb_work_orders > max_work_orders)
                 max_work_orders = nb_work_orders;
         }
 
         /* Send remaining work to free workers */
         if (nb_free_workers > 0 && nb_work_orders > 0) {
+            DPRINTF("Master: SENT to proc %02d - ", free_workers[nb_free_workers - 1]);
+            print_work_order(work_orders[nb_work_orders - 1]);
             send_work_to_proc(
                     free_workers[--nb_free_workers],
                     work_orders[--nb_work_orders],
                     work_order_size);
             assert(nb_free_workers >= 0);
             assert(nb_work_orders >= 0);
+        }
+
+        DPRINTF("Master: work orders (%d) vvv, free procs (%d): ",
+                nb_work_orders, nb_free_workers);
+        print_array(free_workers, 0, nb_free_workers);
+        for (int i = 0; i < nb_work_orders; i++) {
+            DPRINTF("  * ");
+            print_work_order(work_orders[i]);
         }
     }
     assert(nb_free_workers == nb_proc - 1);
@@ -504,8 +521,6 @@ void launch_master(int work_order_size)
 
 void launch_parallel(const struct instance_t *instance, struct context_t *ctx)
 {
-    int n = instance->n_items;
-    MAX_LEVEL_SHARED = n;
     /**
      * A work_order wo contains:
      * - wo[0]: distrib_lvl
@@ -515,7 +530,13 @@ void launch_parallel(const struct instance_t *instance, struct context_t *ctx)
      * - wo[3 + n]: chosen_items (up to [n] items)
      * - wo[3 + (2 * n)]: options_shared (up to [MAX_NB_OPTIONS_SHARED] options)
      */
+    int n = instance->n_items;
     int work_order_size = 3 + (2 * n) + MAX_NB_OPTIONS_SHARED;
+    MAX_LEVEL_SHARED = ceil(n * 0.3); // TODO: Find a name for this constant/parameter
+
+    if (nb_proc < 3)
+        ctx->next_work_share = -1;
+
     int root = 0;
     if (rank == root)
         launch_master(work_order_size);
