@@ -98,7 +98,6 @@ int main(int argc, char **argv)
     start = wtime();
 
 
-
     if (debug_mode) {
         int ifl = 0;
         char hostname[256];

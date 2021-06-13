@@ -134,55 +134,6 @@ void reactivate(const struct instance_t *instance, struct context_t *ctx,
     }
 }
 
-void solve2(const struct instance_t *instance, struct context_t *ctx)
-{
-    //printf("Current level = %d, ctx = %p\n", ctx->level, ctx);
-    //print_context(ctx);
-    ctx->nodes++;
-    if (ctx->nodes == next_report)
-        progress_report(ctx);
-    if (sparse_array_empty(ctx->active_items)) {
-        solution_found(instance, ctx);
-        return;                         /* succès : plus d'objet actif */
-    }
-    int chosen_item = choose_next_item(ctx);
-    struct sparse_array_t *active_options = ctx->active_options[chosen_item];
-    if (sparse_array_empty(active_options))
-        return;           /* échec : impossible de couvrir chosen_item */
-    cover(instance, ctx, chosen_item);
-    ctx->num_children[ctx->level] = active_options->len;
-
-    for (int k = 0; k < active_options->len; k++) {
-        int option = active_options->p[k];
-        ctx->child_num[ctx->level] = k;
-        choose_option(instance, ctx, option, chosen_item);
-        if (ctx->level == 1) {
-            struct context_t *new_cpy = new_copy_context(ctx);
-            //printf(">> k = %d, new_cpy = %p\n", k, new_cpy);
-            #pragma omp task firstprivate(new_cpy,k)
-            {
-                struct context_t *cpy = new_cpy;
-                //printf("++ In task k = %d, cpy = %p\n", k, cpy);
-                cpy->solutions = 0;
-                solve2(instance, cpy);
-                #pragma omp atomic
-                ctx->solutions += cpy->solutions;
-                free_context(&cpy);
-                //printf("-- Out task k = %d, cpy = %p\n", k, cpy);
-            }
-            //printf("<< k = %d\n", k);
-            new_cpy = NULL;
-        } else {
-            solve2(instance, ctx);
-        }
-        if (ctx->solutions >= max_solutions)
-            return;
-        unchoose_option(instance, ctx, option, chosen_item);
-    }
-    #pragma omp taskwait
-    uncover(instance, ctx, chosen_item);                      /* backtrack */
-}
-
 void solve(const struct instance_t *instance, struct context_t *ctx)
 {
     ctx->nodes++;
@@ -197,41 +148,38 @@ void solve(const struct instance_t *instance, struct context_t *ctx)
     if (sparse_array_empty(active_options))
         return;           /* échec : impossible de couvrir chosen_item */
     cover(instance, ctx, chosen_item);
-
-    struct context_t **ctxs = NULL;
-    #pragma omp parallel
-    {
-        int n_threads = omp_get_num_threads();
-        #pragma omp single
-        {
-            ctxs = malloc(n_threads * sizeof(*ctxs));
+    ctx->num_children[ctx->level] = active_options->len;
+    for (int k = 0; k < active_options->len; k++) {
+        int option = active_options->p[k];
+        ctx->child_num[ctx->level] = k;
+        choose_option(instance, ctx, option, chosen_item);
+        if (ctx->level < 2) {
+            struct context_t *new_cpy = new_copy_context(ctx);
+            #pragma omp task
+            {
+                struct context_t *cpy = new_cpy;
+                long long curr_sol = cpy->solutions;
+                solve(instance, cpy);
+                cpy->solutions -= curr_sol;
+                #pragma omp atomic
+                ctx->solutions += cpy->solutions;
+                free_context(&cpy);
+            }
+        } else {
+            solve(instance, ctx);
         }
-
-        #pragma omp for
-        for (int i = 0; i < n_threads; i++)
-            ctxs[i] = new_copy_context(ctx);
-
-        struct context_t *pctx = ctxs[omp_get_thread_num()];
-        #pragma omp for schedule(runtime)
-        for (int k = 0; k < active_options->len; k++) {
-            //printf("th (%d), k = %d\n", omp_get_thread_num(), k);
-            int option = pctx->active_options[chosen_item]->p[k];
-            ctx->child_num[pctx->level] = k;
-            choose_option(instance, pctx, option, chosen_item);
-            solve2(instance, pctx);
-            unchoose_option(instance, pctx, option, chosen_item);
-        }
-
-        #pragma omp single
-        for (int i = 0; i < n_threads; i++)
-            ctx->solutions += ctxs[i]->solutions;
-
+        if (ctx->solutions >= max_solutions)
+            return;
+        unchoose_option(instance, ctx, option, chosen_item);
     }
+    #pragma omp taskwait
     uncover(instance, ctx, chosen_item);                      /* backtrack */
 }
 
 void launch_parallel(const struct instance_t *instance, struct context_t *ctx)
 {
+    #pragma omp parallel
+    #pragma omp single
     solve(instance, ctx);
 }
 

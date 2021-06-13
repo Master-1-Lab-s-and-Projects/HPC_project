@@ -28,9 +28,6 @@ long long report_delta = 1e6;          // affiche un rapport tous les ... noeuds
 long long next_report;                 // prochain rapport affiché au noeud...
 long long max_solutions = 0x7fffffffffffffff;        // stop après ... solutions
 
-int* chosen_items = NULL;
-int nb_chosen_items = 0;
-
 
 struct instance_t {
     int n_items;
@@ -277,8 +274,6 @@ void deactivate(const struct instance_t *instance, struct context_t *ctx,
         int item = instance->options[k];
         if (item == covered_item)
             continue;
-        for (int i = 0; i < nb_chosen_items; i++)
-            assert(chosen_items[i] != item);
         sparse_array_remove(ctx->active_options[item], option);
     }
 }
@@ -546,9 +541,6 @@ void solve(const struct instance_t *instance, struct context_t *ctx)
     if (sparse_array_empty(active_options))
         return;           /* échec : impossible de couvrir chosen_item */
     cover(instance, ctx, chosen_item);
-
-    chosen_items[nb_chosen_items++] = chosen_item;
-
     ctx->num_children[ctx->level] = active_options->len;
     for (int k = 0; k < active_options->len; k++) {
         int option = active_options->p[k];
@@ -559,8 +551,6 @@ void solve(const struct instance_t *instance, struct context_t *ctx)
             return;
         unchoose_option(instance, ctx, option, chosen_item);
     }
-    nb_chosen_items--;
-
     uncover(instance, ctx, chosen_item);                      /* backtrack */
 }
 
@@ -599,7 +589,6 @@ int main(int argc, char **argv)
 
     struct instance_t * instance = load_matrix(in_filename);
     struct context_t * ctx = backtracking_setup(instance);
-    chosen_items = malloc(instance->n_items * sizeof(*chosen_items));
     start = wtime();
     solve(instance, ctx);
     printf("FINI. Trouvé %lld solutions en %.1fs\n", ctx->solutions,

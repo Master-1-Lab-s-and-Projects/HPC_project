@@ -13,7 +13,7 @@ BEAR_CMD = bear -a
 endif
 
 
-debug: CFLAGS += -DDEBUG -g -O0
+debug: CFLAGS += -g -O0
 debug: all
 
 optimized: CFLAGS += -O3

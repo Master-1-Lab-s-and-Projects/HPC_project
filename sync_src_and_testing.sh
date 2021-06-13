@@ -1,7 +1,7 @@
 #!/bin/bash
 
 sync_src_and_testing() {
-    rsync -vr src_* testing "$1.g5k:hpc/"
+    rsync -vr src_omp_tasks  "$1.g5k:hpc/"
 }
 
 sites=(nancy)

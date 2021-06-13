@@ -11,17 +11,18 @@
 #include <omp.h>
 
 #define INCR_WORK_ORDERS_CAPACITY 2 * nb_proc
-const long long WORK_SHARE_DELTA = 5e5; // partage son travail tous les ... noeuds
-const int MAX_NB_OPTIONS_SHARED = 500;
-int MAX_LEVEL_SHARED = -1;
+const long long WORK_SHARE_DELTA = 1e5;         // partage son travail tous les ... noeuds
+const int MAX_NB_OPTIONS_SHARED = 500;          // nombre maximum d'options dans un ordre de travail
+const double MAX_LVL_DISTRIBUTED_PERCENTAGE = 0.4;    // le pourcentage des niveaux distribués
+int MAX_LVL_DISTRIBUTED = -1;
 int WORK_ORDER_SIZE = -1;
 
 int first_level = -1;
 
 struct context_t **thr_ctxs = NULL;     // context used by each thread
 int **thr_work_order_buffers = NULL;    //  work order buffers for each thread
-struct sparse_array_t *fst_lvl_active_options = NULL;
-omp_lock_t fst_lvl_lock;
+struct sparse_array_t *d_lvl_active_options = NULL;
+omp_lock_t d_lvl_active_options_lck;
 
 
 void solution_found(const struct instance_t *instance, struct context_t *ctx)
@@ -153,22 +154,23 @@ void reactivate(const struct instance_t *instance, struct context_t *ctx,
  * Meaning, the process is currently exploring the last configuration
  * of options for all the levels above.
  */
-int get_distribution_lvl(const int *child_num, const int* num_children, int lvl_limit)
+int get_distribution_lvl(const int *child_num, const int* num_children,
+        int first_lvl, int lvl_limit)
 {
-    int d_lvl = first_level + 1; // highest level not completed
-    if (MAX_LEVEL_SHARED < lvl_limit)
-        lvl_limit = MAX_LEVEL_SHARED;
+    int d_lvl = first_lvl; // highest level not completed
+    if (MAX_LVL_DISTRIBUTED < lvl_limit)
+        lvl_limit = MAX_LVL_DISTRIBUTED;
 
-    while (d_lvl < lvl_limit && num_children[d_lvl] - child_num[d_lvl] <= 1)
+    while (d_lvl < lvl_limit && child_num[d_lvl] == num_children[d_lvl] - 1)
         d_lvl++;
 
-    if (d_lvl > lvl_limit || num_children[d_lvl] - child_num[d_lvl] <= 1)
+    if (d_lvl > lvl_limit || child_num[d_lvl] == num_children[d_lvl] - 1) {
         d_lvl = -1;
+    }
 
     return d_lvl;
 }
 
-// TODO
 int get_first_child_to_share(const struct context_t *ctx, int distrib_lvl)
 {
     if (distrib_lvl == first_level)
@@ -186,21 +188,22 @@ void share_work(const struct instance_t *instance, struct context_t *ctx,
 {
     ctx->next_work_share += WORK_SHARE_DELTA;
 
-    omp_set_lock(&fst_lvl_lock);
+    omp_set_lock(&d_lvl_active_options_lck);
 
     int distrib_lvl = first_level;
-    if (sparse_array_empty(fst_lvl_active_options))
-        distrib_lvl = get_distribution_lvl(ctx->child_num, ctx->num_children, ctx->level);
+    if (sparse_array_empty(d_lvl_active_options)) {
+        distrib_lvl = get_distribution_lvl(ctx->child_num, ctx->num_children,
+                first_level + 1, ctx->level);
+        omp_unset_lock(&d_lvl_active_options_lck);
+    }
     if (distrib_lvl == -1) {
-        DPRINTF("Proc [%d]: Did not share work\n", rank);
-        omp_unset_lock(&fst_lvl_lock);
         return;
     }
 
     int first_child_shared = get_first_child_to_share(ctx, distrib_lvl);
     int last_child_shared = (distrib_lvl == first_level)
-        ? min(fst_lvl_active_options->len, MAX_NB_OPTIONS_SHARED)
-        :ctx->num_children[distrib_lvl];
+        ? min(d_lvl_active_options->len, MAX_NB_OPTIONS_SHARED)
+        : ctx->num_children[distrib_lvl];
     int nb_options_shared = last_child_shared - first_child_shared;
 
     int n = instance->n_items;
@@ -216,29 +219,30 @@ void share_work(const struct instance_t *instance, struct context_t *ctx,
 
     int *options_to_share = NULL;
     if (distrib_lvl == first_level) {
-        options_to_share = fst_lvl_active_options->p;
+        options_to_share = d_lvl_active_options->p;
     } else {
         int chosen_item = ctx->chosen_items[distrib_lvl];
         struct sparse_array_t *active_opts = ctx->active_options[chosen_item];
         options_to_share = &active_opts->p[first_child_shared];
     }
-
     memcpy(shr_active_options, options_to_share, nb_options_shared * sizeof(*shr_active_options));
     if (distrib_lvl == first_level) {
-        int len_before = fst_lvl_active_options->len;
+        int len_before = d_lvl_active_options->len;
         for (int i = 0; i < nb_options_shared; i++) {
-            assert(sparse_array_membership(fst_lvl_active_options, shr_active_options[i]));
-            sparse_array_remove(fst_lvl_active_options, shr_active_options[i]);
+            assert(sparse_array_membership(d_lvl_active_options, shr_active_options[i]));
+            sparse_array_remove(d_lvl_active_options, shr_active_options[i]);
         }
-        assert(len_before - nb_options_shared == fst_lvl_active_options->len);
-    }
-    omp_unset_lock(&fst_lvl_lock);
 
+        assert(len_before - nb_options_shared == d_lvl_active_options->len);
+        omp_unset_lock(&d_lvl_active_options_lck);
+    }
+
+    #pragma omp critical
     MPI_Send(work_order_buffer, WORK_ORDER_SIZE, MPI_INTEGER, 0, 0, MPI_COMM_WORLD);
     ctx->num_children[distrib_lvl] = first_child_shared;
 }
 
-void solve2(const struct instance_t *instance, struct context_t *ctx,
+void solve(const struct instance_t *instance, struct context_t *ctx,
         int *work_order_buffer)
 {
     ctx->nodes++;
@@ -260,7 +264,7 @@ void solve2(const struct instance_t *instance, struct context_t *ctx,
         if (ctx->nodes == ctx->next_work_share)
             share_work(instance, ctx, work_order_buffer);
         choose_option(instance, ctx, option, chosen_item);
-        solve2(instance, ctx, work_order_buffer);
+        solve(instance, ctx, work_order_buffer);
         if (ctx->solutions >= max_solutions)
             return;
         unchoose_option(instance, ctx, option, chosen_item);
@@ -268,7 +272,7 @@ void solve2(const struct instance_t *instance, struct context_t *ctx,
     uncover(instance, ctx, chosen_item);                      /* backtrack */
 }
 
-void solve(const struct instance_t *instance, struct context_t *ctx,
+void solve_dispatch(const struct instance_t *instance, struct context_t *ctx,
         int chosen_item, int num_children)
 {
     const struct sparse_array_t *active_options = ctx->active_options[chosen_item];
@@ -278,8 +282,8 @@ void solve(const struct instance_t *instance, struct context_t *ctx,
 
     long long nodes_before = ctx->nodes;
     long long solutions_before = ctx->solutions;
-    copy_sparse_array(active_options, fst_lvl_active_options);
-    fst_lvl_active_options->len = num_children;
+    copy_sparse_array(active_options, d_lvl_active_options);
+    d_lvl_active_options->len = num_children;
     assert(first_level == ctx->level);
     #pragma omp parallel
     {
@@ -293,23 +297,24 @@ void solve(const struct instance_t *instance, struct context_t *ctx,
         #pragma omp for schedule(dynamic, 1)
         for (int k = 0; k < num_children; k++) {
             int option = active_options->p[k];
-            bool was_shared = true;
+            bool opt_was_shared = true;
 
-            omp_set_lock(&fst_lvl_lock);
-            if (sparse_array_membership(fst_lvl_active_options, option)) {
-                sparse_array_remove(fst_lvl_active_options, option);
-                was_shared = false;
+            omp_set_lock(&d_lvl_active_options_lck);
+            if (sparse_array_membership(d_lvl_active_options, option)) {
+                sparse_array_remove(d_lvl_active_options, option);
+                opt_was_shared = false;
             }
-            omp_unset_lock(&fst_lvl_lock);
+            omp_unset_lock(&d_lvl_active_options_lck);
 
-            if (!was_shared) {
+            if (!opt_was_shared) {
                 if (pctx->nodes == pctx->next_work_share)
                     share_work(instance, pctx, work_order_buffer);
                 choose_option(instance, pctx, option, chosen_item);
-                solve2(instance, pctx, work_order_buffer);
+                solve(instance, pctx, work_order_buffer);
                 unchoose_option(instance, pctx, option, chosen_item);
             }
         }
+
         long long nodes_seen = pctx->nodes - nodes_before;
         long long solutions_seen = pctx->solutions - solutions_before;
 
@@ -318,7 +323,7 @@ void solve(const struct instance_t *instance, struct context_t *ctx,
         #pragma omp atomic
         ctx->solutions += solutions_seen;
     }
-    assert(fst_lvl_active_options->len == 0);
+    assert(d_lvl_active_options->len == 0);
 
     ctx->next_work_share = ctx->nodes - (ctx->nodes % WORK_SHARE_DELTA);
     ctx->next_work_share += WORK_SHARE_DELTA;
@@ -400,10 +405,6 @@ void launch_worker(const struct instance_t *instance, struct context_t *ctx)
     if (work_order == NULL)
         err(1, "impossible d'allouer le buffer de distribution");
 
-    double idle_time = 0.0;
-    double build_time = 0.0;
-    int nb_work_orders_handled = 0;
-
     int n = instance->n_items;
 
     int chosen_item = choose_next_item(ctx);
@@ -419,71 +420,50 @@ void launch_worker(const struct instance_t *instance, struct context_t *ctx)
     int lst_opt_idx = (rank == nb_proc - 1) ? nb_loops : fst_opt_idx + chunk;
     int nb_opts = lst_opt_idx - fst_opt_idx;
 
-    copy_sparse_array(active_options, fst_lvl_active_options);
-    reorder_active_options(active_options, fst_lvl_active_options->p + fst_opt_idx, nb_opts);
+    copy_sparse_array(active_options, d_lvl_active_options);
+    /**
+     * We don't simply copy the options in the range [fst_opt_idx ...
+     * lst_opt_idx] in the options_shared part of the work_buffer because
+     * the number of options will most likely exceed MAX_NB_OPTIONS_SHARED.
+     * (It depends on the number of process launched.)
+     */
+    reorder_active_options(active_options, d_lvl_active_options->p + fst_opt_idx, nb_opts);
 
-    work_order[0] = 0;          // distribution level
+    work_order[0] = 0;
     work_order[1] = nb_opts;
     work_order[2 + n] = chosen_item;
-    bool first_work = true;
+    bool skip_reorder = true;
     do {
-        first_level = work_order[0];
-        int distrib_lvl     = work_order[0];
+        int d_lvl           = work_order[0];
         int nb_options      = work_order[1];
         int *chosen_options = &work_order[2];
         int *chosen_items   = &work_order[2 + n];
         int *options_shared = &work_order[2 + (2 * n)];
 
-        int d_chosen_item = chosen_items[distrib_lvl];
+        int d_chosen_item = chosen_items[d_lvl];
+        first_level = d_lvl;
 
-        DPRINTF("Proc [%d]: RCVD next (%lld), curr (%lld)\n", rank, ctx->next_work_share, ctx->nodes);
-        print_work_order(work_order);
-
-        double start_build = wtime();
-        build_context(instance, ctx, chosen_items, chosen_options, distrib_lvl);
-        if (!first_work)
+        build_context(instance, ctx, chosen_items, chosen_options, d_lvl);
+        if (!skip_reorder)
             reorder_active_options(ctx->active_options[d_chosen_item], options_shared, nb_options);
-        build_time += wtime() - start_build;
+        skip_reorder = false;
 
-        solve(instance, ctx, d_chosen_item, nb_options);
-        nb_work_orders_handled++;
-        first_work = false;
+        long long current_nb_solutions = ctx->solutions;
+        solve_dispatch(instance, ctx, d_chosen_item, nb_options);
+        long long found_solutions = ctx->solutions - current_nb_solutions;
 
-        double start_reset = wtime();
-        reset_context(instance, ctx, ctx->chosen_items, ctx->chosen_options, distrib_lvl);
-        build_time += wtime() - start_reset;
-
-        double start_idle = wtime();
+        reset_context(instance, ctx, ctx->chosen_items, ctx->chosen_options, d_lvl);
 
         work_order[0] = -1;
         MPI_Send(work_order, WORK_ORDER_SIZE, MPI_INTEGER, 0, 0, MPI_COMM_WORLD);
+        MPI_Send(&found_solutions, 1, MPI_LONG_LONG_INT, 0, 0, MPI_COMM_WORLD);
         MPI_Recv(work_order, WORK_ORDER_SIZE, MPI_INTEGER, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
-        // TODO: count waiting time when no more work
-        if (work_order[0] != -1)
-            idle_time += wtime() - start_idle;
-
     } while(work_order[0] != -1);
-    printf("Proc [%d]: solutions (%lld), nb_work_orders_handled (%d)\n", rank, ctx->solutions, nb_work_orders_handled);
-    printf("Proc [%d]: idle_time = %.3fs, build_time = %.3fs\n", rank, idle_time, build_time);
     free(work_order);
 }
 
-void swap_work_orders(int **work_order_a, int **work_order_b)
-{
-    int *tmp = *work_order_a;
-    *work_order_a = *work_order_b;
-    *work_order_b = tmp;
-}
-
-void swap_free_workers(int *worker_a, int *worker_b)
-{
-    int tmp = *worker_a;
-    *worker_a = *worker_b;
-    *worker_b = tmp;
-}
-
-void launch_master()
+long long launch_master()
 {
     int nb_free_workers = 0;
     int *free_workers = malloc((nb_proc - 1) * sizeof(*free_workers));
@@ -498,6 +478,8 @@ void launch_master()
 
     int max_work_orders = 0;
     int deepest_level_shrd = 0;
+    bool found_max_solutions = false;
+    long long total_solutions = 0;
     while (nb_free_workers < nb_proc - 1) {
         if (nb_work_orders >= work_orders_capacity)
             work_orders = allocate_work_orders(work_orders, &work_orders_capacity);
@@ -507,17 +489,14 @@ void launch_master()
         int proc_src = wait_for_work(work_orders[nb_work_orders]);
         idle_time += wtime() - start_idle;
 
-        if (work_orders[nb_work_orders][0] == -1) {
-            DPRINTF("Master: RCVD free proc n°%d\n", proc_src);
+        if (work_orders[nb_work_orders][0] < 0) {
+            long long solutions = 0;
+            MPI_Recv(&solutions, 1, MPI_LONG_LONG_INT, proc_src, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            total_solutions += solutions;
+            found_max_solutions = (total_solutions >= max_solutions);
             free_workers[nb_free_workers++] = proc_src;
-            //if (nb_free_workers > 0)
-            //    swap_free_workers(&free_workers[0], &free_workers[nb_free_workers - 1]);
-        } else {
+        } else if (!found_max_solutions) {
             nb_work_orders++;
-            DPRINTF("Master: RCVD work order from proc n°%d: ", proc_src);
-            print_work_order(work_orders[nb_work_orders - 1]);
-            //if (nb_work_orders > 1)
-            //    swap_work_orders(&work_orders[0], &work_orders[nb_work_orders - 1]);
             if (work_orders[nb_work_orders - 1][0] > deepest_level_shrd)
                 deepest_level_shrd = work_orders[nb_work_orders - 1][0];
             if (nb_work_orders > max_work_orders)
@@ -525,22 +504,12 @@ void launch_master()
         }
 
         /* Send remaining work to free workers */
-        if (nb_free_workers > 0 && nb_work_orders > 0) {
-            DPRINTF("Master: SENT to proc %02d - ", free_workers[nb_free_workers - 1]);
-            print_work_order(work_orders[nb_work_orders - 1]);
+        if (nb_free_workers > 0 && nb_work_orders > 0 && !found_max_solutions) {
             send_work_to_proc(
                     free_workers[--nb_free_workers],
                     work_orders[--nb_work_orders]);
             assert(nb_free_workers >= 0);
             assert(nb_work_orders >= 0);
-        }
-
-        DPRINTF("Master: work orders (%d) vvv, free procs (%d): ",
-                nb_work_orders, nb_free_workers);
-        print_array(free_workers, 0, nb_free_workers);
-        for (int i = 0; i < nb_work_orders; i++) {
-            DPRINTF("  * ");
-            print_work_order(work_orders[i]);
         }
     }
     assert(nb_free_workers == nb_proc - 1);
@@ -551,23 +520,22 @@ void launch_master()
     MPI_Request req;
     for (int proc = 1; proc < nb_proc; proc++)
         MPI_Isend(work_orders[0], WORK_ORDER_SIZE, MPI_INTEGER, proc, 0, MPI_COMM_WORLD, &req);
-    printf("Master: idle_time = %.3fs, Max work orders at the same time = %d, Deepest lvl shrd = %d\n",
-            idle_time, max_work_orders, deepest_level_shrd);
 
     free(free_workers);
     for (int i = 0; i < work_orders_capacity; i++)
         free(work_orders[i]);
     free(work_orders);
+    return total_solutions;
 }
 
 void setup_omp(const struct context_t *ctx, int n_options)
 {
     int n_max_threads = omp_get_max_threads();
+    assert(n_max_threads > 0);
     thr_ctxs = malloc(n_max_threads * sizeof(*thr_ctxs));
     if (thr_ctxs == NULL)
         err(1, "Impossible d'allouer le tableau de contexts pour les threads");
 
-    //#pragma omp parallel for
     for (int i = 0; i < n_max_threads; i++)
         thr_ctxs[i] = new_copy_context(ctx);
 
@@ -575,15 +543,14 @@ void setup_omp(const struct context_t *ctx, int n_options)
     if (thr_work_order_buffers == NULL)
         err(1, "Impossible d'allouer le tableau de work orders pour les threads");
 
-    //#pragma omp parallel for
     for (int i = 0; i < n_max_threads; i++) {
         thr_work_order_buffers[i] = malloc(WORK_ORDER_SIZE * sizeof(*thr_work_order_buffers[i]));
         if (thr_work_order_buffers[i] == NULL)
             err(1, "Impossible d'allouer le work order pour le thread");
     }
 
-    fst_lvl_active_options = sparse_array_init(n_options);
-    omp_init_lock(&fst_lvl_lock);
+    d_lvl_active_options = sparse_array_init(n_options);
+    omp_init_lock(&d_lvl_active_options_lck);
 }
 
 void launch_parallel(const struct instance_t *instance, struct context_t *ctx)
@@ -598,20 +565,18 @@ void launch_parallel(const struct instance_t *instance, struct context_t *ctx)
      */
     int n = instance->n_items;
     WORK_ORDER_SIZE = 2 + (2 * n) + MAX_NB_OPTIONS_SHARED;
-    MAX_LEVEL_SHARED = ceil(n * 0.4); // TODO: Find a name for this constant/parameter
+    MAX_LVL_DISTRIBUTED = ceil(n * MAX_LVL_DISTRIBUTED_PERCENTAGE);
+
+    if (nb_proc < 3)
+        ctx->next_work_share = -1;
 
     setup_omp(ctx, instance->n_options);
 
     int root = 0;
     if (rank == root)
-        launch_master();
+        ctx->solutions = launch_master();
     else
         launch_worker(instance, ctx);
-
-    long long int total_solutions = 0;
-    MPI_Reduce(&ctx->solutions, &total_solutions, 1, MPI_LONG_LONG_INT, MPI_SUM,
-            root, MPI_COMM_WORLD);
-    ctx->solutions = total_solutions;
 }
 
 struct context_t * backtracking_setup(const struct instance_t *instance)

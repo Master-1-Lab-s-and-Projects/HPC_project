@@ -9,20 +9,24 @@ fi
 PROGRAM="$1"
 RESULTS="$2"
 
-for f in $(cat instances.list)
+nb_proc_min=2
+nb_proc_max=40
+
+for f in $(grep -v '^#' instances.list)
 do
     instance_name=$(echo $f | cut -d ',' -f 1)
     nb_solutions_expected=$(echo $f | cut -d ',' -f 2)
-	echo "$instance_name" >> $RESULTS
+	echo -n "$instance_name " >> $RESULTS
+	echo -n "0.0 " >> $RESULTS
 
     echo "### $instance_name ###"
-	for i in $(seq 1 16)
+	for i in $(seq $nb_proc_min $nb_proc_max)
 	do
-        echo "$i/16"
-        res=$(mpirun -N $i "$PROGRAM" --in  "../Instances/$instance_name" --progress-report 0)
+        echo "$i/$nb_proc_max"
+        res=$(mpirun --hostfile $OAR_NODEFILE -np $i "$PROGRAM" --in  "../Instances/$instance_name" --load-method bcast --progress-report 0)
         if [ $? -ne 0 ]
         then
-            echo "Error" >> $RESULTS
+            echo -n "error " >> $RESULTS
             continue
         fi
 
@@ -34,6 +38,12 @@ do
         fi
 
         time=$(echo $res | sed 's/FINI.*en \(.*\)s/\1/')
-        echo $time >> $RESULTS
+        echo -n "$time " >> $RESULTS
 	done
+    echo "" >> $RESULTS
 done
+
+if [ $(grep -vc '^#' instances.list) -ne 0 ]
+then
+    sed -i '$ d' $RESULTS
+fi
